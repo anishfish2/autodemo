@@ -1,0 +1,250 @@
+import type {
+  ShowcaseOptions,
+  ShowcaseResult,
+  DemoScenario,
+} from "./showcase-types.js";
+import { analyzeProject } from "./project-analyzer.js";
+import { planShowcase } from "./showcase-planner.js";
+import { AppLauncher } from "./app-launcher.js";
+import { runAgent } from "../agent/agent-runner.js";
+import { createLogger } from "../trace/logger.js";
+import { EventLogger } from "../recording/event-logger.js";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { promisify } from "node:util";
+import { nanoid } from "nanoid";
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export async function runShowcase(
+  options: ShowcaseOptions,
+): Promise<ShowcaseResult> {
+  const showcaseId = `showcase_${new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14)}_${nanoid(6)}`;
+  const showcaseDir = join(options.traceDir, showcaseId);
+  mkdirSync(showcaseDir, { recursive: true });
+
+  const logger = createLogger(showcaseDir, options.verbose);
+  const startMs = Date.now();
+
+  // === 1. ANALYZE ===
+  logger.info({ path: options.projectPath }, "Analyzing project...");
+  const projectInfo = await analyzeProject(options.projectPath);
+
+  // Apply overrides
+  if (options.startCmd) {
+    projectInfo.startCommand = options.startCmd;
+  }
+  if (options.port) {
+    projectInfo.startUrl = `http://localhost:${options.port}`;
+  }
+  if (options.url) {
+    projectInfo.startUrl = options.url;
+  }
+
+  logger.info(
+    {
+      name: projectInfo.name,
+      framework: projectInfo.framework,
+      routes: projectInfo.routes.length,
+      components: projectInfo.components.length,
+      startCommand: projectInfo.startCommand,
+      startUrl: projectInfo.startUrl,
+    },
+    "Project analyzed",
+  );
+
+  console.log(`\nProject: ${projectInfo.name} (${projectInfo.framework})`);
+  console.log(`Routes: ${projectInfo.routes.join(", ") || "(none detected)"}`);
+  console.log(`Components: ${projectInfo.components.length} found`);
+  console.log(`Start: ${projectInfo.startCommand} → ${projectInfo.startUrl}\n`);
+
+  // === 2. PLAN ===
+  const scenarios = await planShowcase(
+    projectInfo,
+    options.model,
+    logger,
+    options.maxScenarios,
+    options.instructions,
+  );
+
+  console.log(`Demo plan (${scenarios.length} scenarios):`);
+  for (const s of scenarios) {
+    console.log(`  ${s.order}. ${s.title} (${s.startPath})`);
+    console.log(`     ${s.description.slice(0, 100)}${s.description.length > 100 ? "..." : ""}`);
+  }
+  console.log();
+
+  // === 3. LAUNCH APP ===
+  const appLauncher = new AppLauncher(logger);
+  const shouldLaunch = !options.url;
+
+  if (shouldLaunch) {
+    try {
+      await appLauncher.start(
+        options.projectPath,
+        projectInfo.startCommand,
+        projectInfo.startUrl,
+      );
+      // Use the actual URL the server is running on (port may have changed)
+      const actualUrl = appLauncher.getActualUrl();
+      if (actualUrl && actualUrl !== projectInfo.startUrl) {
+        logger.info(
+          { expected: projectInfo.startUrl, actual: actualUrl },
+          "Dev server started on different port",
+        );
+        projectInfo.startUrl = actualUrl;
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`\nFailed to start dev server: ${msg}`);
+      console.error(`Try starting it manually and use --url to point to it.`);
+      throw err;
+    }
+  }
+
+  // === 4. START RECORDING ===
+  const recording = options.record;
+  let eventLogger: EventLogger | undefined;
+  const recordingsDir = join(showcaseDir, "recordings");
+  const eventsPath = join(showcaseDir, "events.json");
+
+  if (recording) {
+    mkdirSync(recordingsDir, { recursive: true });
+    eventLogger = new EventLogger();
+  }
+
+  // === 5. EXECUTE DEMOS ===
+  const results: ShowcaseResult["scenarios"] = [];
+
+  try {
+    for (let i = 0; i < scenarios.length; i++) {
+      const scenario = scenarios[i];
+      console.log(
+        `\n--- Scenario ${i + 1}/${scenarios.length}: ${scenario.title} ---`,
+      );
+
+      eventLogger?.logScenarioStart(scenario.title);
+
+      const taskWithInstructions = options.instructions
+        ? `${scenario.description}\n\nAdditional context: ${options.instructions}`
+        : scenario.description;
+
+      let agentResult;
+      try {
+        agentResult = await runAgent({
+          task: taskWithInstructions,
+          startUrl: projectInfo.startUrl + scenario.startPath,
+          maxIterations: 50,
+          maxTotalSteps: 200,
+          totalTimeoutMs: 600000,
+          chunkSize: 5,
+          headless: options.headless,
+          traceDir: showcaseDir,
+          verbose: options.verbose,
+          slowMo: options.slowMo,
+          model: options.model,
+          cursor: options.cursor,
+          cursorSpeed: options.cursorSpeed,
+          eventLogger,
+          recordVideoDir: recording ? recordingsDir : undefined,
+          computerUse: options.computerUse,
+        });
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        logger.error({ error: errorMsg, scenario: scenario.title }, "Scenario crashed");
+        console.error(`\n✗ ${scenario.title}: CRASHED — ${errorMsg}`);
+        // Stop recording immediately — don't capture error state in video
+        break;
+      }
+
+      eventLogger?.logScenarioEnd(scenario.title);
+      results.push({ scenario, agentResult });
+
+      const icon = agentResult.result === "success" ? "✓" : "✗";
+      console.log(
+        `${icon} ${scenario.title}: ${agentResult.result} (${agentResult.totalIterations} iters, ${agentResult.totalStepsExecuted} steps)`,
+      );
+
+      // If scenario failed, stop — don't record more broken state
+      if (agentResult.result === "failure") {
+        logger.warn("Scenario failed — stopping showcase to keep video clean");
+        break;
+      }
+
+      if (i < scenarios.length - 1) {
+        await sleep(2000);
+      }
+    }
+  } finally {
+    // === 6. SAVE EVENTS ===
+    if (eventLogger) {
+      eventLogger.save(eventsPath);
+    }
+
+    // === 7. CLEANUP ===
+    if (shouldLaunch) {
+      await appLauncher.stop();
+    }
+  }
+
+  // === 8. FIND AND REPORT VIDEOS ===
+  // Playwright saves videos as .webm files in the recordings dir
+  if (recording) {
+    const { readdirSync } = await import("node:fs");
+    try {
+      const videoFiles = readdirSync(recordingsDir).filter((f) =>
+        f.endsWith(".webm"),
+      );
+      if (videoFiles.length > 0) {
+        // Convert webm to mp4 for better compatibility
+        const rawWebm = join(recordingsDir, videoFiles[0]);
+        const outputMp4 = join(showcaseDir, "demo-video.mp4");
+
+        logger.info("Converting Playwright recording to MP4...");
+        const { execFileAsync: execF } = await import("node:child_process").then(
+          (m) => ({ execFileAsync: promisify(m.execFile) }),
+        );
+        try {
+          await execF("ffmpeg", [
+            "-y",
+            "-i",
+            rawWebm,
+            "-c:v",
+            "libx264",
+            "-preset",
+            "medium",
+            "-crf",
+            "20",
+            "-pix_fmt",
+            "yuv420p",
+            outputMp4,
+          ]);
+          console.log(`\nVideo saved: ${outputMp4}`);
+        } catch {
+          console.log(`\nRaw recording saved: ${rawWebm}`);
+        }
+      } else {
+        console.log("\nNo video files found in recordings directory.");
+      }
+    } catch {
+      console.log("\nRecordings directory not found.");
+    }
+  }
+
+  const showcaseResult: ShowcaseResult = {
+    projectName: projectInfo.name,
+    framework: projectInfo.framework,
+    scenarios: results,
+    totalDurationMs: Date.now() - startMs,
+    traceDir: showcaseDir,
+  };
+
+  writeFileSync(
+    join(showcaseDir, "showcase-summary.json"),
+    JSON.stringify(showcaseResult, null, 2),
+  );
+
+  return showcaseResult;
+}

@@ -1,0 +1,54 @@
+metadata:
+  name: "Google Search"
+  description: "Open Chrome, navigate to Google, search for a term"
+
+steps:
+  - action: open_url
+    url: "https://www.google.com"
+    wait_until: load
+    description: "Navigate to Google"
+    assertions:
+      - type: title
+        operator: contains
+        value: "Google"
+
+  - action: click
+    target:
+      strategy: role
+      role: combobox
+      name: Search
+    description: "Focus the search box"
+
+  - action: type
+    target:
+      strategy: role
+      role: combobox
+      name: Search
+    text: "macOS automation with Playwright"
+    delay_ms: 30
+    description: "Type search query (with delay to trigger autocomplete naturally)"
+
+  - action: press_keys
+    keys: "Escape"
+    description: "Dismiss autocomplete dropdown"
+
+  - action: press_keys
+    keys: "Enter"
+    description: "Submit search"
+
+  - action: wait_for
+    condition:
+      type: selector
+      target:
+        strategy: selector
+        value: "#search"
+      state: visible
+    timeout_ms: 15000
+    description: "Wait for search results"
+    assertions:
+      - type: url
+        operator: contains
+        value: "search"
+
+  - action: done
+    message: "Search completed successfully"

@@ -1,0 +1,64 @@
+metadata:
+  name: "Fill Form Demo"
+  description: "Navigate to a demo form and fill it out"
+
+steps:
+  - action: open_url
+    url: "https://httpbin.org/forms/post"
+    wait_until: load
+    description: "Open httpbin form page"
+
+  - action: type
+    target:
+      strategy: selector
+      value: "input[name='custname']"
+    text: "Jane Doe"
+    clear_first: true
+    description: "Fill customer name"
+
+  - action: type
+    target:
+      strategy: selector
+      value: "input[name='custtel']"
+    text: "555-1234"
+    description: "Fill phone number"
+
+  - action: type
+    target:
+      strategy: selector
+      value: "input[name='custemail']"
+    text: "jane@example.com"
+    description: "Fill email"
+
+  - action: click
+    target:
+      strategy: selector
+      value: "input[name='size'][value='medium']"
+    description: "Select medium size"
+
+  - action: click
+    target:
+      strategy: selector
+      value: "input[name='topping'][value='bacon']"
+    description: "Select bacon topping"
+
+  - action: type
+    target:
+      strategy: selector
+      value: "textarea[name='comments']"
+    text: "Extra crispy please!"
+    description: "Add delivery instructions"
+
+  - action: click
+    target:
+      strategy: role
+      role: button
+      name: "Submit order"
+    description: "Submit the form"
+    assertions:
+      - type: url
+        operator: contains
+        value: "httpbin.org"
+
+  - action: done
+    message: "Form filled and submitted"

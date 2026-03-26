@@ -1,0 +1,40 @@
+metadata:
+  name: "Copy Between Pages"
+  description: "Extract text from one page and verify it"
+
+steps:
+  - action: open_url
+    url: "https://example.com"
+    wait_until: load
+    description: "Open example.com"
+    assertions:
+      - type: title
+        operator: contains
+        value: "Example Domain"
+
+  - action: extract_text
+    target:
+      strategy: selector
+      value: "h1"
+    store_as: "heading"
+    description: "Extract the main heading"
+
+  - action: assert
+    assertion:
+      type: text_content
+      target:
+        strategy: selector
+        value: "h1"
+      operator: equals
+      value: "Example Domain"
+    message: "Heading should be 'Example Domain'"
+
+  - action: extract_text
+    target:
+      strategy: text
+      value: "This domain is for use in"
+    store_as: "description"
+    description: "Extract the description paragraph"
+
+  - action: done
+    message: "Text extracted successfully"
