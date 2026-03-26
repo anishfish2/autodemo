@@ -605,37 +605,43 @@
       }
     }
 
-    // Check if a time is inside a cut segment
-    function isInCutSegment(timeSec) {
+    // Find the next keepable time at or after the given time
+    // Skips through any consecutive cut segments
+    function findNextKeepTime(timeSec) {
+      if (S.showCuts) return timeSec; // Show cuts mode = play everything
+      // Walk through EDL segments in order
       for (const seg of S.edl) {
-        if (seg.type === 'cut' && timeSec >= seg.startSec && timeSec < seg.endSec) {
-          return seg;
+        if (seg.endSec <= timeSec) continue; // Already past this segment
+        if (seg.type === 'keep') {
+          // We're in or before a keep segment
+          return Math.max(timeSec, seg.startSec);
         }
-      }
-      return null;
-    }
-
-    // Find the next non-cut time after a given time
-    function skipPastCut(timeSec) {
-      for (const seg of S.edl) {
-        if (seg.type === 'cut' && timeSec >= seg.startSec && timeSec < seg.endSec) {
-          return seg.endSec; // Jump to end of cut
-        }
+        // It's a cut segment that overlaps timeSec — skip to its end
+        // and continue checking (next segment might also be cut)
+        timeSec = seg.endSec;
       }
       return timeSec;
     }
+
+    let _skipLock = false; // Prevent re-entrant skipping
 
     // Animation loop for playback
     function startRenderLoop() {
       function tick() {
         if (!_playing) return;
         const v = document.getElementById('vp');
-        if (v) {
-          // Skip cut sections during playback
-          const cutSeg = isInCutSegment(v.currentTime);
-          if (cutSeg && !S.showCuts) {
-            v.currentTime = cutSeg.endSec;
-            S.playheadSec = cutSeg.endSec;
+        if (v && !_skipLock) {
+          const t = v.currentTime;
+          const keepTime = findNextKeepTime(t);
+          if (keepTime > t + 0.05) {
+            // Need to skip — jump forward
+            _skipLock = true;
+            v.currentTime = keepTime;
+            S.playheadSec = keepTime;
+            // Wait for seek to complete before continuing
+            v.addEventListener('seeked', () => {
+              _skipLock = false;
+            }, { once: true });
           }
         }
         renderPreviewFrame();
@@ -674,8 +680,16 @@
         _playing = false;
         if (_rafId) { cancelAnimationFrame(_rafId); _rafId = null; }
         if (btn) btn.textContent = '▶';
-        renderPreviewFrame(); // Show clean frame
+        renderPreviewFrame();
       } else {
+        // If starting from a cut section, skip to next keep
+        if (!S.showCuts) {
+          const keepTime = findNextKeepTime(v.currentTime);
+          if (keepTime > v.currentTime + 0.05) {
+            v.currentTime = keepTime;
+            S.playheadSec = keepTime;
+          }
+        }
         v.play();
         _playing = true;
         if (btn) btn.textContent = '⏸';
@@ -847,12 +861,23 @@
       // Sync playhead when video is playing
       const v0 = document.getElementById('vp');
       if (v0) {
-        // ontimeupdate only needed when not in render loop (scrubbing)
         v0.ontimeupdate = () => {
-          if (_dragging || _playing) return;
+          if (_dragging) return;
+          // Skip cuts during playback
+          if (_playing && !_skipLock && !S.showCuts) {
+            const keepTime = findNextKeepTime(v0.currentTime);
+            if (keepTime > v0.currentTime + 0.05) {
+              _skipLock = true;
+              v0.currentTime = keepTime;
+              v0.addEventListener('seeked', () => { _skipLock = false; }, { once: true });
+              return;
+            }
+          }
           S.playheadSec = v0.currentTime;
-          drawTimeline();
-          updateTimeDisplay();
+          if (!_playing) {
+            drawTimeline();
+            updateTimeDisplay();
+          }
         };
         v0.onended = () => {
           _playing = false;
