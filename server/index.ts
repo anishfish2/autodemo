@@ -71,7 +71,7 @@ function sendJson(res: http.ServerResponse, data: any, status = 200): void {
   res.end(JSON.stringify(data));
 }
 
-function sendFile(res: http.ServerResponse, filePath: string): void {
+function sendFile(res: http.ServerResponse, filePath: string, req?: http.IncomingMessage): void {
   if (!existsSync(filePath)) {
     res.writeHead(404);
     res.end("Not found");
@@ -80,9 +80,31 @@ function sendFile(res: http.ServerResponse, filePath: string): void {
   const ext = extname(filePath);
   const mime = MIME[ext] || "application/octet-stream";
   const stat = statSync(filePath);
+  const fileSize = stat.size;
+
+  // Support HTTP range requests for video seeking
+  const range = req?.headers?.range;
+  if (range && (ext === ".mp4" || ext === ".webm")) {
+    const parts = range.replace(/bytes=/, "").split("-");
+    const start = parseInt(parts[0], 10);
+    const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+    const chunkSize = end - start + 1;
+
+    res.writeHead(206, {
+      "Content-Range": `bytes ${start}-${end}/${fileSize}`,
+      "Accept-Ranges": "bytes",
+      "Content-Length": chunkSize,
+      "Content-Type": mime,
+      "Access-Control-Allow-Origin": "*",
+    });
+    createReadStream(filePath, { start, end }).pipe(res);
+    return;
+  }
+
   res.writeHead(200, {
     "Content-Type": mime,
-    "Content-Length": stat.size,
+    "Content-Length": fileSize,
+    "Accept-Ranges": "bytes",
     "Access-Control-Allow-Origin": "*",
   });
   createReadStream(filePath).pipe(res);
@@ -235,11 +257,11 @@ async function handleRequest(
     // Check active demo first
     const demo = demos.get(id);
     if (demo?.traceDir) {
-      sendFile(res, join(demo.traceDir, filename));
+      sendFile(res, join(demo.traceDir, filename), req);
       return;
     }
     // Check traces dir
-    sendFile(res, join(TRACES_DIR, id, filename));
+    sendFile(res, join(TRACES_DIR, id, filename), req);
     return;
   }
 
