@@ -13,9 +13,12 @@ import pino from "pino";
 import { runPreflight, printPreflight } from "./preflight.js";
 
 const TRACES_DIR = resolve("traces");
-// UI files are relative to the package install location, not cwd
+// UI files: resolve relative to this file's location
+// Works in both dev (server/index.ts → ../ui/dist) and built (dist/server/index.js → ../../ui/dist)
 const __dirname_pkg = new URL(".", import.meta.url).pathname;
-const UI_DIR = resolve(join(__dirname_pkg, "..", "..", "ui", "dist"));
+const UI_CANDIDATE_1 = resolve(join(__dirname_pkg, "..", "ui", "dist"));      // dev: server/ → ../ui/dist
+const UI_CANDIDATE_2 = resolve(join(__dirname_pkg, "..", "..", "ui", "dist")); // built: dist/server/ → ../../ui/dist
+const UI_DIR = existsSync(join(UI_CANDIDATE_1, "index.html")) ? UI_CANDIDATE_1 : UI_CANDIDATE_2;
 
 // --- Active demos ---
 interface ActiveDemo {
