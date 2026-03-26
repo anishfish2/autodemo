@@ -59,7 +59,7 @@ async function animateCursorTo(
     `ObjC.import('CoreGraphics');
      ObjC.import('Cocoa');
      const steps = ${steps};
-     const delay = ${delayMs / 1000}; // seconds
+     const stepDelay = ${delayMs / 1000};
      const sx = ${startX}, sy = ${startY};
      const cx = ${ctrlX}, cy = ${ctrlY};
      const tx = ${targetX}, ty = ${targetY};
@@ -75,7 +75,7 @@ async function animateCursorTo(
        const p = $.CGPointMake(x, y);
        const ev = $.CGEventCreateMouseEvent(null, $.kCGEventMouseMoved, p, 0);
        $.CGEventPost($.kCGHIDEventTap, ev);
-       $.NSThread.sleepForTimeInterval(delay);
+       $.NSThread.sleepForTimeInterval(stepDelay);
      }`,
   ]);
 
