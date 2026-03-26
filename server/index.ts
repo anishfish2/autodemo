@@ -1,5 +1,5 @@
 import http from "node:http";
-import { readFileSync, existsSync, readdirSync, statSync, createReadStream } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, createReadStream } from "node:fs";
 import { join, extname, resolve } from "node:path";
 import { WebSocketServer, WebSocket } from "ws";
 import { loadConfig, saveConfig, getApiKey } from "./config.js";
@@ -262,6 +262,38 @@ async function handleRequest(
     }
     // Check traces dir
     sendFile(res, join(TRACES_DIR, id, filename), req);
+    return;
+  }
+
+  // Save/load demo metadata (name, edl, zoom regions)
+  const metaMatch = path.match(/^\/api\/demo\/([^/]+)\/metadata$/);
+  if (metaMatch && method === "PUT") {
+    const id = metaMatch[1];
+    const body = await parseBody(req);
+    const demo = demos.get(id);
+    const traceDir = demo?.traceDir || join(TRACES_DIR, id);
+    const metaPath = join(traceDir, "metadata.json");
+    let existing: Record<string, unknown> = {};
+    if (existsSync(metaPath)) {
+      try { existing = JSON.parse(readFileSync(metaPath, "utf-8")); } catch {}
+    }
+    const merged = { ...existing, ...body };
+    writeFileSync(metaPath, JSON.stringify(merged, null, 2));
+    // Also update in-memory demo
+    if (demo && body.name) demo.task = body.name;
+    sendJson(res, { ok: true });
+    return;
+  }
+  if (metaMatch && method === "GET") {
+    const id = metaMatch[1];
+    const demo = demos.get(id);
+    const traceDir = demo?.traceDir || join(TRACES_DIR, id);
+    const metaPath = join(traceDir, "metadata.json");
+    if (existsSync(metaPath)) {
+      sendJson(res, JSON.parse(readFileSync(metaPath, "utf-8")));
+    } else {
+      sendJson(res, {});
+    }
     return;
   }
 

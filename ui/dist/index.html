@@ -147,6 +147,20 @@
 
     // ── EDL ──
     async function loadEDL(demoId) {
+      // Check for persisted edits first
+      try {
+        const meta = await api(`/demo/${demoId}/metadata`);
+        if (meta.edl && Array.isArray(meta.edl) && meta.edl.length > 0) {
+          S.edl = meta.edl;
+          recalcDurations();
+          S.zoomRegions = meta.zoomRegions || [];
+          S.motionBlur = meta.motionBlur || false;
+          if (meta.name && S.activeDemo) S.activeDemo.name = meta.name;
+          return; // Persisted edits loaded — skip auto-generation
+        }
+      } catch {}
+
+      // No persisted edits — build from action log
       try {
         const entries = await api(`/demo/${demoId}/edl`);
         if (Array.isArray(entries)) {
@@ -161,7 +175,6 @@
         if (Array.isArray(zoomData) && zoomData.length > 0) {
           S.zoomRegions = zoomData.map(z => ({ ...z, auto: true }));
         } else {
-          // Fallback: auto-generate from action log
           const entries = await api(`/demo/${demoId}/edl`);
           if (Array.isArray(entries)) {
             S.zoomRegions = buildZoomRegions(entries);
@@ -374,9 +387,12 @@
 
       return `
         <div class="flex-between" style="margin-bottom:16px">
-          <h1>Edit Demo</h1>
+          <input type="text" id="demo-name" value="${escHtml(d.name || d.task || d.id)}"
+            style="font-size:24px;font-weight:700;background:transparent;border:1px solid transparent;padding:4px 8px;border-radius:6px;width:auto;flex:1;margin-right:12px"
+            onfocus="this.style.borderColor='#333'" onblur="this.style.borderColor='transparent';saveDemoName(this.value)"
+            onkeydown="if(event.key==='Enter'){this.blur()}" />
           <div style="display:flex;gap:8px">
-            <button class="btn btn-secondary btn-sm" onclick="S.view='dashboard';loadDemos();render()">← Back</button>
+            <button class="btn btn-secondary btn-sm" onclick="saveEdits();S.view='dashboard';loadDemos();render()">← Back</button>
           </div>
         </div>
         <div class="editor-layout">
@@ -521,8 +537,8 @@
 
     // ── Canvas Preview Engine ──
     let _playing = false;
-    let _blurFrames = []; // Ring buffer of recent frames for motion blur
-    const BLUR_FRAME_COUNT = 5;
+    let _blurFrames = [];
+    const BLUR_FRAME_COUNT = 3;
     let _rafId = null;
 
     function initPreview() {
@@ -595,48 +611,67 @@
 
       const t = video.currentTime;
 
-      // Find active or nearby zoom region for smooth transitions
       const scaleX = vw / 1024;
       const scaleY = vh / 768;
-
-      // Calculate effective zoom level and center with smooth transitions
-      let effectiveZ = 1;
-      let panX = vw / 2; // Default center = middle of video
-      let panY = vh / 2;
-
-      // Ramp duration: how long to ease in/out (seconds)
       const RAMP = 1.5;
 
-      for (const zr of S.zoomRegions) {
+      function quinticEase(raw) {
+        return raw < 0.5 ? 16*raw*raw*raw*raw*raw : 1 - Math.pow(-2*raw+2, 5)/2;
+      }
+
+      // Find current zoom region and neighbors for smooth transitions
+      let effectiveZ = 1;
+      let panX = vw / 2;
+      let panY = vh / 2;
+      const sorted = [...S.zoomRegions].sort((a, b) => a.startSec - b.startSec);
+
+      for (let zi = 0; zi < sorted.length; zi++) {
+        const zr = sorted[zi];
+        const prev = zi > 0 ? sorted[zi - 1] : null;
+        const next = zi < sorted.length - 1 ? sorted[zi + 1] : null;
         const targetCX = zr.cx * scaleX;
         const targetCY = zr.cy * scaleY;
 
         if (t >= zr.startSec && t <= zr.endSec) {
-          // Inside a zoom region
           const duration = zr.endSec - zr.startSec;
-          const rampIn = Math.min(RAMP, duration * 0.4);
-          const rampOut = Math.min(RAMP, duration * 0.4);
 
-          // Ease in at start, hold in middle, ease out at end
+          // Check if previous zoom is close enough to crossfade from
+          const prevClose = prev && (zr.startSec - prev.endSec) < RAMP * 2;
+          // Check if next zoom is close enough to crossfade to
+          const nextClose = next && (next.startSec - zr.endSec) < RAMP * 2;
+
+          const rampIn = prevClose ? 0 : Math.min(RAMP, duration * 0.4);
+          const rampOut = nextClose ? 0 : Math.min(RAMP, duration * 0.4);
+
           let progress;
-          if (t < zr.startSec + rampIn) {
-            // Ramping in — quintic ease-in-out (very smooth, no perceptible snap)
-            const raw = (t - zr.startSec) / rampIn;
-            progress = raw < 0.5 ? 16 * raw * raw * raw * raw * raw : 1 - Math.pow(-2 * raw + 2, 5) / 2;
-          } else if (t > zr.endSec - rampOut) {
-            // Ramping out
-            const raw = (zr.endSec - t) / rampOut;
-            progress = raw < 0.5 ? 16 * raw * raw * raw * raw * raw : 1 - Math.pow(-2 * raw + 2, 5) / 2;
+          if (rampIn > 0 && t < zr.startSec + rampIn) {
+            progress = quinticEase((t - zr.startSec) / rampIn);
+          } else if (rampOut > 0 && t > zr.endSec - rampOut) {
+            progress = quinticEase((zr.endSec - t) / rampOut);
           } else {
-            // Fully zoomed
             progress = 1;
           }
 
           effectiveZ = 1 + (zr.zoomLevel - 1) * progress;
-          // Pan gradually toward target center
           panX = vw / 2 + (targetCX - vw / 2) * progress;
           panY = vh / 2 + (targetCY - vh / 2) * progress;
           break;
+        }
+
+        // Between two zoom regions — crossfade pan/zoom from one to the next
+        if (next && t > zr.endSec && t < next.startSec) {
+          const gap = next.startSec - zr.endSec;
+          if (gap < RAMP * 2) {
+            // Smooth transition between zooms
+            const raw = (t - zr.endSec) / gap;
+            const ease = quinticEase(raw);
+            const fromCX = zr.cx * scaleX, fromCY = zr.cy * scaleY;
+            const toCX = next.cx * scaleX, toCY = next.cy * scaleY;
+            effectiveZ = zr.zoomLevel + (next.zoomLevel - zr.zoomLevel) * ease;
+            panX = fromCX + (toCX - fromCX) * ease;
+            panY = fromCY + (toCY - fromCY) * ease;
+            break;
+          }
         }
       }
 
@@ -655,8 +690,7 @@
       // Motion blur: composite older frames on top with decay
       if (S.motionBlur && _blurFrames.length > 0) {
         for (let i = 0; i < _blurFrames.length; i++) {
-          // Older frames get more transparent
-          ctx.globalAlpha = 0.2 * (1 - i / _blurFrames.length);
+          ctx.globalAlpha = 0.08 * (1 - i / _blurFrames.length);
           ctx.drawImage(_blurFrames[i], 0, 0);
         }
         ctx.globalAlpha = 1.0;
@@ -1279,6 +1313,7 @@
       S.zoomRegions[idx].auto = false;
       drawZoomTrack();
       updateSegPanel();
+      debounceSave();
     }
 
     function removeZoomRegion(idx) {
@@ -1286,6 +1321,29 @@
       S.selectedZoom = -1;
       drawZoomTrack();
       updateSegPanel();
+      debounceSave();
+    }
+
+    // ── Persist edits ──
+    async function saveDemoName(name) {
+      const d = S.activeDemo;
+      if (!d) return;
+      d.name = name;
+      await api(`/demo/${d.id}/metadata`, { method: 'PUT', body: { name } });
+    }
+
+    async function saveEdits() {
+      const d = S.activeDemo;
+      if (!d) return;
+      await api(`/demo/${d.id}/metadata`, {
+        method: 'PUT',
+        body: {
+          name: d.name,
+          edl: S.edl,
+          zoomRegions: S.zoomRegions,
+          motionBlur: S.motionBlur,
+        },
+      });
     }
 
     // ── Segment editing ──
@@ -1299,14 +1357,20 @@
       drawTimeline();
       updateSegPanel();
       updateTimeDisplay();
+      debounceSave();
+    }
+
+    let _saveTimer = null;
+    function debounceSave() {
+      if (_saveTimer) clearTimeout(_saveTimer);
+      _saveTimer = setTimeout(() => saveEdits(), 1000);
     }
 
     function splitSegment(idx, atTimeSec) {
       const seg = S.edl[idx];
       if (!seg) return;
-      if (atTimeSec <= seg.startSec + 0.1 || atTimeSec >= seg.endSec - 0.1) return; // Too close to edge
+      if (atTimeSec <= seg.startSec + 0.1 || atTimeSec >= seg.endSec - 0.1) return;
 
-      // Create two segments from one
       const newSeg = {
         startSec: atTimeSec,
         endSec: seg.endSec,
@@ -1323,6 +1387,7 @@
       buildTimeMarkers();
       drawTimeline();
       updateSegPanel();
+      debounceSave();
     }
 
     function toggleSplitMode() {
