@@ -554,51 +554,61 @@
 
       const t = video.currentTime;
 
-      // Check if current time falls within a zoom region
-      let activeZoom = null;
+      // Find active or nearby zoom region for smooth transitions
+      const scaleX = vw / 1024;
+      const scaleY = vh / 768;
+
+      // Calculate effective zoom level and center with smooth transitions
+      let effectiveZ = 1;
+      let panX = vw / 2; // Default center = middle of video
+      let panY = vh / 2;
+
+      // Ramp duration: how long to ease in/out (seconds)
+      const RAMP = 0.8;
+
       for (const zr of S.zoomRegions) {
+        const targetCX = zr.cx * scaleX;
+        const targetCY = zr.cy * scaleY;
+
         if (t >= zr.startSec && t <= zr.endSec) {
-          activeZoom = zr;
+          // Inside a zoom region
+          const duration = zr.endSec - zr.startSec;
+          const rampIn = Math.min(RAMP, duration * 0.35);
+          const rampOut = Math.min(RAMP, duration * 0.35);
+
+          // Ease in at start, hold in middle, ease out at end
+          let progress;
+          if (t < zr.startSec + rampIn) {
+            // Ramping in
+            const raw = (t - zr.startSec) / rampIn;
+            progress = raw * raw * (3 - 2 * raw); // smoothstep
+          } else if (t > zr.endSec - rampOut) {
+            // Ramping out
+            const raw = (zr.endSec - t) / rampOut;
+            progress = raw * raw * (3 - 2 * raw); // smoothstep
+          } else {
+            // Fully zoomed
+            progress = 1;
+          }
+
+          effectiveZ = 1 + (zr.zoomLevel - 1) * progress;
+          // Pan gradually toward target center
+          panX = vw / 2 + (targetCX - vw / 2) * progress;
+          panY = vh / 2 + (targetCY - vh / 2) * progress;
           break;
         }
       }
 
-      if (activeZoom) {
-        // Zoom: crop a region centered on (cx, cy) and scale it up
-        const z = activeZoom.zoomLevel;
-        // cx, cy are in the 1024x768 coordinate space the agent used
-        // Scale to video pixels
-        const scaleX = vw / 1024;
-        const scaleY = vh / 768;
-        const centerX = activeZoom.cx * scaleX;
-        const centerY = activeZoom.cy * scaleY;
+      // Apply zoom: crop around (panX, panY) and scale up
+      const cropW = vw / effectiveZ;
+      const cropH = vh / effectiveZ;
+      let sx = panX - cropW / 2;
+      let sy = panY - cropH / 2;
+      // Clamp to video bounds
+      sx = Math.max(0, Math.min(sx, vw - cropW));
+      sy = Math.max(0, Math.min(sy, vh - cropH));
 
-        const cropW = vw / z;
-        const cropH = vh / z;
-        let sx = centerX - cropW / 2;
-        let sy = centerY - cropH / 2;
-        // Clamp to video bounds
-        sx = Math.max(0, Math.min(sx, vw - cropW));
-        sy = Math.max(0, Math.min(sy, vh - cropH));
-
-        // Smooth zoom transition at edges (ease in/out over 0.3s)
-        const fadeIn = Math.min(1, (t - activeZoom.startSec) / 0.3);
-        const fadeOut = Math.min(1, (activeZoom.endSec - t) / 0.3);
-        const ease = Math.min(fadeIn, fadeOut);
-        const effectiveZ = 1 + (z - 1) * ease;
-
-        const eCropW = vw / effectiveZ;
-        const eCropH = vh / effectiveZ;
-        let eSx = centerX - eCropW / 2;
-        let eSy = centerY - eCropH / 2;
-        eSx = Math.max(0, Math.min(eSx, vw - eCropW));
-        eSy = Math.max(0, Math.min(eSy, vh - eCropH));
-
-        ctx.drawImage(video, eSx, eSy, eCropW, eCropH, 0, 0, vw, vh);
-      } else {
-        // No zoom — draw full frame
-        ctx.drawImage(video, 0, 0, vw, vh);
-      }
+      ctx.drawImage(video, sx, sy, cropW, cropH, 0, 0, vw, vh);
 
       // Motion blur: blend with previous frame
       if (S.motionBlur && _prevFrameData) {
