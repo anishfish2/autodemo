@@ -7,6 +7,7 @@ import { nanoid } from "nanoid";
 import type { AgentOptions, AgentResult } from "./agent-types.js";
 import { ActionLog } from "../recording/action-log.js";
 import { autoEdit } from "../recording/auto-editor.js";
+import { runDirector } from "../recording/director.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -564,6 +565,29 @@ export async function runNativeComputerUseAgent(
       console.log("  Re-encode failed — seeking may be limited");
     }
     console.log(`Raw video: ${videoPath}`);
+
+    // Director pass: LLM reviews screenshots and decides zoom regions
+    console.log("Running director pass for zoom regions...");
+    try {
+      const zoomRegions = await runDirector({
+        traceDir,
+        actionLogPath,
+        model: options.model,
+      });
+      if (zoomRegions.length > 0) {
+        const zoomPath = join(traceDir, "zoom-regions.json");
+        const { writeFileSync: wf } = await import("node:fs");
+        wf(zoomPath, JSON.stringify(zoomRegions, null, 2));
+        console.log(`  Director chose ${zoomRegions.length} zoom regions`);
+        for (const z of zoomRegions) {
+          console.log(`    ${z.startSec.toFixed(1)}s-${z.endSec.toFixed(1)}s ${z.zoomLevel}x at (${z.cx},${z.cy}) — ${z.reason}`);
+        }
+      } else {
+        console.log("  Director: no zoom regions");
+      }
+    } catch (err) {
+      console.log(`  Director pass failed: ${err instanceof Error ? err.message : err}`);
+    }
 
     // Auto-edit: compress thinking time, keep actions at normal speed
     const editedPath = join(traceDir, "edited.mp4");

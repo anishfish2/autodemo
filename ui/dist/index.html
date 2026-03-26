@@ -150,10 +150,25 @@
         const entries = await api(`/demo/${demoId}/edl`);
         if (Array.isArray(entries)) {
           S.edl = buildEDLFromEntries(entries);
-          S.zoomRegions = buildZoomRegions(entries);
           recalcDurations();
         }
       } catch {}
+
+      // Load director zoom regions if available, fallback to auto-generated
+      try {
+        const zoomData = await fetch(`/api/demo/${demoId}/zoom-regions`).then(r => r.ok ? r.json() : null);
+        if (Array.isArray(zoomData) && zoomData.length > 0) {
+          S.zoomRegions = zoomData.map(z => ({ ...z, auto: true }));
+        } else {
+          // Fallback: auto-generate from action log
+          const entries = await api(`/demo/${demoId}/edl`);
+          if (Array.isArray(entries)) {
+            S.zoomRegions = buildZoomRegions(entries);
+          }
+        }
+      } catch {
+        S.zoomRegions = [];
+      }
     }
 
     function buildZoomRegions(entries) {

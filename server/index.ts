@@ -265,6 +265,20 @@ async function handleRequest(
     return;
   }
 
+  // Get director zoom regions
+  const zoomMatch = path.match(/^\/api\/demo\/([^/]+)\/zoom-regions$/);
+  if (zoomMatch && method === "GET") {
+    const id = zoomMatch[1];
+    const demo = demos.get(id);
+    const zoomPath = join(demo?.traceDir || join(TRACES_DIR, id), "zoom-regions.json");
+    if (existsSync(zoomPath)) {
+      sendJson(res, JSON.parse(readFileSync(zoomPath, "utf-8")));
+    } else {
+      sendJson(res, [], 200); // Empty array = no director regions
+    }
+    return;
+  }
+
   // Get/update EDL
   const edlMatch = path.match(/^\/api\/demo\/([^/]+)\/edl$/);
   if (edlMatch && method === "GET") {
