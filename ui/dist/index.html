@@ -521,7 +521,7 @@
 
     // ── Canvas Preview Engine ──
     let _playing = false;
-    let _prevFrameData = null; // For motion blur
+    let _prevFrameCanvas = null; // For motion blur — offscreen canvas
     let _rafId = null;
 
     function initPreview() {
@@ -648,25 +648,29 @@
       sx = Math.max(0, Math.min(sx, vw - cropW));
       sy = Math.max(0, Math.min(sy, vh - cropH));
 
-      ctx.drawImage(video, sx, sy, cropW, cropH, 0, 0, vw, vh);
-
-      // Motion blur: blend with previous frame
-      if (S.motionBlur && _prevFrameData) {
-        const imgData = ctx.getImageData(0, 0, vw, vh);
-        const curr = imgData.data;
-        const prev = _prevFrameData;
-        // Blend: 70% current + 30% previous
-        for (let i = 0; i < curr.length; i += 4) {
-          curr[i] = curr[i] * 0.7 + prev[i] * 0.3;
-          curr[i+1] = curr[i+1] * 0.7 + prev[i+1] * 0.3;
-          curr[i+2] = curr[i+2] * 0.7 + prev[i+2] * 0.3;
-        }
-        ctx.putImageData(imgData, 0, 0);
+      // Motion blur: draw previous frame first at partial opacity, then current on top
+      if (S.motionBlur && _prevFrameCanvas) {
+        // Layer 1: previous frame (ghost trail)
+        ctx.globalAlpha = 0.45;
+        ctx.drawImage(_prevFrameCanvas, 0, 0);
+        // Layer 2: current frame on top
+        ctx.globalAlpha = 0.7;
+        ctx.drawImage(video, sx, sy, cropW, cropH, 0, 0, vw, vh);
+        ctx.globalAlpha = 1.0;
+      } else {
+        ctx.drawImage(video, sx, sy, cropW, cropH, 0, 0, vw, vh);
       }
 
-      // Save current frame for motion blur
+      // Save current frame for next motion blur pass (GPU-accelerated copy)
       if (S.motionBlur) {
-        _prevFrameData = ctx.getImageData(0, 0, vw, vh).data;
+        if (!_prevFrameCanvas) {
+          _prevFrameCanvas = document.createElement('canvas');
+        }
+        _prevFrameCanvas.width = vw;
+        _prevFrameCanvas.height = vh;
+        _prevFrameCanvas.getContext('2d').drawImage(canvas, 0, 0);
+      } else {
+        _prevFrameCanvas = null;
       }
     }
 
