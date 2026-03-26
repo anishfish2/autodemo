@@ -97,7 +97,8 @@
       totalOutputDur: 0,
       timelineZoom: 1,   // pixels per second
       showCuts: false,
-      motionBlur: false, // cursor motion blur
+      motionBlur: false,
+      splitMode: false,  // Cut/split tool active
       isDragging: false,
       ws: null,
     };
@@ -407,6 +408,7 @@
                 <label style="display:flex;align-items:center;gap:4px;cursor:pointer;margin:0;font-size:11px;color:#888">
                   <input type="checkbox" ${S.motionBlur?'checked':''} onchange="S.motionBlur=this.checked" style="accent-color:#4f8ff7"> Motion blur
                 </label>
+                <button class="btn btn-sm" style="padding:4px 10px;font-size:11px;${S.splitMode?'background:#dc2626;color:white;border-color:#dc2626':'background:#222;color:#ccc;border:1px solid #333'}" onclick="toggleSplitMode()">✂ Split</button>
               </div>
             </div>
             <div id="tl-scroll" style="overflow-x:auto;overflow-y:hidden;position:relative;border-radius:6px;background:#111;padding:4px 0">
@@ -564,7 +566,7 @@
       let panY = vh / 2;
 
       // Ramp duration: how long to ease in/out (seconds)
-      const RAMP = 0.8;
+      const RAMP = 1.5;
 
       for (const zr of S.zoomRegions) {
         const targetCX = zr.cx * scaleX;
@@ -573,19 +575,19 @@
         if (t >= zr.startSec && t <= zr.endSec) {
           // Inside a zoom region
           const duration = zr.endSec - zr.startSec;
-          const rampIn = Math.min(RAMP, duration * 0.35);
-          const rampOut = Math.min(RAMP, duration * 0.35);
+          const rampIn = Math.min(RAMP, duration * 0.4);
+          const rampOut = Math.min(RAMP, duration * 0.4);
 
           // Ease in at start, hold in middle, ease out at end
           let progress;
           if (t < zr.startSec + rampIn) {
-            // Ramping in
+            // Ramping in — quintic ease-in-out (very smooth, no perceptible snap)
             const raw = (t - zr.startSec) / rampIn;
-            progress = raw * raw * (3 - 2 * raw); // smoothstep
+            progress = raw < 0.5 ? 16 * raw * raw * raw * raw * raw : 1 - Math.pow(-2 * raw + 2, 5) / 2;
           } else if (t > zr.endSec - rampOut) {
             // Ramping out
             const raw = (zr.endSec - t) / rampOut;
-            progress = raw * raw * (3 - 2 * raw); // smoothstep
+            progress = raw < 0.5 ? 16 * raw * raw * raw * raw * raw : 1 - Math.pow(-2 * raw + 2, 5) / 2;
           } else {
             // Fully zoomed
             progress = 1;
@@ -761,6 +763,22 @@
           return;
         }
 
+        // Split mode: click to split a segment at this point
+        if (S.splitMode) {
+          const inputSec = tlXtoInputTime(mx);
+          let found = -1;
+          for (let i = 0; i < S.edl.length; i++) {
+            if (inputSec >= S.edl[i].startSec && inputSec < S.edl[i].endSec) { found = i; break; }
+          }
+          if (found >= 0) {
+            splitSegment(found, inputSec);
+            S.splitMode = false;
+            canvas.style.cursor = 'pointer';
+            render(); // Re-render to update split button state
+          }
+          return;
+        }
+
         // Click the playhead circle? Enter sticky mode
         if (Math.abs(mx - phX) < 10) {
           const my = e.offsetY;
@@ -815,6 +833,12 @@
 
       canvas.onmousemove = (e) => {
         const mx = e.offsetX;
+
+        // Split mode cursor
+        if (S.splitMode) {
+          canvas.style.cursor = 'crosshair';
+          return;
+        }
 
         // Sticky playhead mode: follow mouse X
         if (_stickyPlayhead) {
@@ -1061,9 +1085,10 @@
             <h3>${escHtml(seg.label)}</h3>
             <span class="time-label">${fmtTime(seg.startSec)} → ${fmtTime(seg.endSec)} &nbsp; (${dur.toFixed(1)}s)</span>
           </div>
-          <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
-            ${[0.5, 1, 1.5, 2, 4].map(sp => `<button class="speed-btn ${seg.speed===sp && seg.type==='keep'?'active':''}" onclick="setSegSpeed(${S.selectedSeg},${sp},'keep')">${sp}x</button>`).join('')}
-            <button class="speed-btn cut ${seg.type==='cut'?'active':''}" onclick="setSegSpeed(${S.selectedSeg},0,'cut')">Cut</button>
+          <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;align-items:center">
+            <button class="speed-btn ${seg.type==='keep' && seg.speed===1 ? 'active' : ''}" onclick="setSegSpeed(${S.selectedSeg},1,'keep')" style="${seg.type==='keep' ? '' : 'background:#1a3a1a;border-color:#2d5a2d;color:#4ade80'}">Keep</button>
+            ${[0.5, 1.5, 2, 4].map(sp => `<button class="speed-btn ${seg.speed===sp && seg.type==='keep'?'active':''}" onclick="setSegSpeed(${S.selectedSeg},${sp},'keep')">${sp}x</button>`).join('')}
+            <button class="speed-btn cut ${seg.type==='cut'?'active':''}" onclick="setSegSpeed(${S.selectedSeg},0,'cut')">✂ Cut</button>
           </div>
         </div>`;
     }
@@ -1227,6 +1252,37 @@
       drawTimeline();
       updateSegPanel();
       updateTimeDisplay();
+    }
+
+    function splitSegment(idx, atTimeSec) {
+      const seg = S.edl[idx];
+      if (!seg) return;
+      if (atTimeSec <= seg.startSec + 0.1 || atTimeSec >= seg.endSec - 0.1) return; // Too close to edge
+
+      // Create two segments from one
+      const newSeg = {
+        startSec: atTimeSec,
+        endSec: seg.endSec,
+        type: seg.type,
+        speed: seg.speed,
+        label: seg.label + ' (split)',
+      };
+      seg.endSec = atTimeSec;
+
+      S.edl.splice(idx + 1, 0, newSeg);
+      recalcDurations();
+      S.selectedSeg = idx + 1;
+      resizeTimeline();
+      buildTimeMarkers();
+      drawTimeline();
+      updateSegPanel();
+    }
+
+    function toggleSplitMode() {
+      S.splitMode = !S.splitMode;
+      const canvas = document.getElementById('timeline');
+      if (canvas) canvas.style.cursor = S.splitMode ? 'crosshair' : 'pointer';
+      render(); // Re-render to update button state
     }
 
     async function reExport() {
