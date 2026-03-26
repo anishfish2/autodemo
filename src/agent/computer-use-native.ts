@@ -21,44 +21,63 @@ function easeOutCubic(t: number): number {
 
 /**
  * Smoothly animate the real system cursor from current position to target
- * along a bezier arc with ease-out timing. This is captured by FFmpeg.
+ * along a bezier arc with ease-out timing. Uses CGEventCreateMouseEvent
+ * for proper mouse move events (smooth, not teleporting) and runs the
+ * entire animation in a single osascript call to eliminate per-step overhead.
  */
 async function animateCursorTo(
   targetX: number,
   targetY: number,
-  durationMs = 500,
+  durationMs = 600,
 ): Promise<void> {
   const startX = cursorX;
   const startY = cursorY;
   const dist = Math.sqrt((targetX - startX) ** 2 + (targetY - startY) ** 2);
+  if (dist < 3) { cursorX = targetX; cursorY = targetY; return; }
 
   // Scale duration with distance — short moves are faster
-  const adjustedDuration = Math.max(200, Math.min(durationMs, dist * 1.5));
-  const steps = Math.round(adjustedDuration / 25); // ~40fps cursor updates
+  const adjustedDuration = Math.max(250, Math.min(durationMs, dist * 1.5));
+  const steps = Math.max(20, Math.round(adjustedDuration / 12)); // ~80fps for smooth motion
+  const delayMs = adjustedDuration / steps;
 
-  // Bezier control point: midpoint + perpendicular offset for arc
+  // Bezier control point for arc
   const mx = (startX + targetX) / 2;
   const my = (startY + targetY) / 2;
   const dx = targetX - startX;
   const dy = targetY - startY;
   const len = Math.sqrt(dx * dx + dy * dy) || 1;
-  const offset = dist * 0.12;
-  const cx = mx + (-dy / len) * offset;
-  const cy = my + (dx / len) * offset;
+  const arcOffset = dist * 0.1;
+  const ctrlX = mx + (-dy / len) * arcOffset;
+  const ctrlY = my + (dx / len) * arcOffset;
 
-  for (let i = 1; i <= steps; i++) {
-    const t = easeOutCubic(i / steps);
-    const u = 1 - t;
-    const x = Math.round(u * u * startX + 2 * u * t * cx + t * t * targetX);
-    const y = Math.round(u * u * startY + 2 * u * t * cy + t * t * targetY);
-    await execFileAsync("osascript", [
-      "-l",
-      "JavaScript",
-      "-e",
-      `ObjC.import('CoreGraphics'); $.CGWarpMouseCursorPosition($.CGPointMake(${x}, ${y}))`,
-    ]);
-    await new Promise((r) => setTimeout(r, adjustedDuration / steps));
-  }
+  // Run entire animation in a single osascript process
+  // Uses CGEventCreateMouseEvent for proper mouse move events
+  await execFileAsync("osascript", [
+    "-l",
+    "JavaScript",
+    "-e",
+    `ObjC.import('CoreGraphics');
+     ObjC.import('Cocoa');
+     const steps = ${steps};
+     const delay = ${delayMs / 1000}; // seconds
+     const sx = ${startX}, sy = ${startY};
+     const cx = ${ctrlX}, cy = ${ctrlY};
+     const tx = ${targetX}, ty = ${targetY};
+
+     for (let i = 1; i <= steps; i++) {
+       // Ease-out cubic
+       const raw = i / steps;
+       const t = 1 - Math.pow(1 - raw, 3);
+       const u = 1 - t;
+       const x = u * u * sx + 2 * u * t * cx + t * t * tx;
+       const y = u * u * sy + 2 * u * t * cy + t * t * ty;
+
+       const p = $.CGPointMake(x, y);
+       const ev = $.CGEventCreateMouseEvent(null, $.kCGEventMouseMoved, p, 0);
+       $.CGEventPost($.kCGHIDEventTap, ev);
+       $.NSThread.sleepForTimeInterval(delay);
+     }`,
+  ]);
 
   cursorX = targetX;
   cursorY = targetY;
