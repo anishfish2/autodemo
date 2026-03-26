@@ -100,6 +100,7 @@
       motionBlur: false,
       splitMode: false,  // Cut/split tool active
       isDragging: false,
+      preflight: null,   // { checks, apiKeySet, allOk }
       ws: null,
     };
 
@@ -340,11 +341,33 @@
     }
 
     function renderDashboard() {
+      const pf = S.preflight;
+      const setupBanner = pf && !pf.allOk ? `
+        <div class="card" style="border-color:#f59e0b;margin-bottom:16px">
+          <h3 style="color:#f59e0b;margin-bottom:12px">Setup needed</h3>
+          ${pf.checks.filter(c => c.status !== 'ok').map(c => `
+            <div style="margin-bottom:8px">
+              <span style="color:${c.status==='missing'?'#ef4444':'#f59e0b'}">${c.status==='missing'?'✗':'⚠'}</span>
+              <strong>${c.name}</strong>: ${c.message}
+              ${c.fix ? `<br><code style="font-size:12px;color:#888;background:#1a1a1a;padding:2px 6px;border-radius:4px">${escHtml(c.fix)}</code>` : ''}
+            </div>
+          `).join('')}
+          ${!pf.apiKeySet ? `
+            <div style="margin-bottom:8px">
+              <span style="color:#ef4444">✗</span>
+              <strong>API Key</strong>: Not configured
+              <br><button class="btn btn-sm btn-secondary" style="margin-top:4px" onclick="S.view='settings';render()">Configure in Settings</button>
+            </div>
+          ` : ''}
+        </div>
+      ` : '';
+
       return `
         <div class="flex-between" style="margin-bottom:32px">
           <div><h1>demoo</h1><p class="subtitle">Automated demo video generation</p></div>
           <button class="btn btn-secondary" onclick="S.view='settings';render()">Settings</button>
         </div>
+        ${setupBanner}
         <div class="card">
           <div class="mb"><label>URL or project path</label>
             <input type="text" id="input-url" placeholder="https://myapp.com or /path/to/project" /></div>
@@ -1496,9 +1519,10 @@
     // ── Init ──
     async function init() {
       S.config = await api('/config');
+      S.preflight = await api('/preflight');
       await loadDemos();
       connectWS();
-      if (!S.config.anthropicApiKey) S.view = 'settings';
+      if (!S.preflight.apiKeySet) S.view = 'settings';
       render();
     }
     init();

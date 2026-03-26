@@ -10,6 +10,7 @@ import { AppLauncher } from "../src/showcase/app-launcher.js";
 import { ActionLog } from "../src/recording/action-log.js";
 import { autoEdit } from "../src/recording/auto-editor.js";
 import pino from "pino";
+import { runPreflight, printPreflight } from "./preflight.js";
 
 const TRACES_DIR = resolve("traces");
 // UI files are relative to the package install location, not cwd
@@ -132,6 +133,19 @@ async function handleRequest(
   }
 
   // --- API Routes ---
+
+  // Preflight checks
+  if (path === "/api/preflight" && method === "GET") {
+    const checks = runPreflight();
+    const config = loadConfig();
+    const apiKeySet = !!(config.anthropicApiKey || process.env.ANTHROPIC_API_KEY);
+    sendJson(res, {
+      checks,
+      apiKeySet,
+      allOk: checks.every((c) => c.status === "ok") && apiKeySet,
+    });
+    return;
+  }
 
   // Config
   if (path === "/api/config" && method === "GET") {
@@ -556,6 +570,10 @@ async function runDemo(demo: ActiveDemo, apiKey: string, instructions?: string):
 
 // --- Start Server ---
 export function startServer(port = 3456): void {
+  // Run preflight checks on startup
+  console.log("  Preflight checks:");
+  const checks = runPreflight();
+  printPreflight(checks);
   const server = http.createServer((req, res) => {
     handleRequest(req, res).catch((err) => {
       console.error("Server error:", err);
