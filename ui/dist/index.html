@@ -459,7 +459,9 @@
     function initTimeline() {
       const canvas = document.getElementById('timeline');
       const scroll = document.getElementById('tl-scroll');
-      const video = document.getElementById('vp');
+      // Don't capture video in closure — look it up fresh each time
+      // because render() rebuilds the DOM
+      const getVideo = () => document.getElementById('vp');
       if (!canvas || !S.edl.length) return;
 
       _tlCanvas = canvas;
@@ -513,7 +515,7 @@
         }
         S.selectedSeg = found;
         S.playheadSec = inputSec;
-        if (video) { video.pause(); video.currentTime = inputSec; }
+        const v1 = getVideo(); if (v1) { v1.pause(); v1.currentTime = inputSec; }
         drawTimeline();
         updateSegPanel();
         updateTimeDisplay();
@@ -537,7 +539,7 @@
         if (_dragging === 'playhead') {
           const inputSec = tlXtoInputTime(mx);
           S.playheadSec = Math.max(0, Math.min(inputSec, S.totalInputDur));
-          if (video) { video.pause(); video.currentTime = S.playheadSec; }
+          const v2 = getVideo(); if (v2) { v2.pause(); v2.currentTime = S.playheadSec; }
           drawTimeline();
           updateTimeDisplay();
         }
@@ -574,10 +576,12 @@
       canvas.onmouseleave = stopDrag;
 
       // Sync playhead with video playback
-      if (video) {
-        video.ontimeupdate = () => {
+      const v0 = getVideo();
+      if (v0) {
+        v0.ontimeupdate = () => {
           if (_dragging) return;
-          S.playheadSec = video.currentTime;
+          const vv = getVideo();
+          if (vv) S.playheadSec = vv.currentTime;
           drawTimeline();
           updateTimeDisplay();
         };
