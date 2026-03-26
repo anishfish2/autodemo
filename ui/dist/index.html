@@ -328,8 +328,12 @@
           </div>
         </div>
         <div class="editor-layout">
-          <div class="card" style="padding:0;overflow:hidden;border-radius:10px">
-            <video id="vp" src="${src}" controls></video>
+          <div class="card" style="padding:0;overflow:hidden;border-radius:10px;position:relative">
+            <video id="vp" src="${src}" preload="auto" muted playsinline style="pointer-events:none"></video>
+            <div id="vp-overlay" style="position:absolute;bottom:0;left:0;right:0;padding:8px 12px;display:flex;align-items:center;gap:12px;background:linear-gradient(transparent,rgba(0,0,0,0.7))">
+              <button id="vp-play" class="btn btn-sm" style="background:rgba(255,255,255,0.15);color:#fff;padding:6px 12px" onclick="togglePlay()">▶</button>
+              <span id="vp-time" style="font-size:12px;color:#ccc;font-family:'SF Mono',monospace">0:00.0</span>
+            </div>
           </div>
 
           <div class="flex-between" style="padding:4px 0">
@@ -456,12 +460,35 @@
       _tlCanvas.width = Math.ceil(totalW * _tlPPS);
     }
 
+    function seekVideo(timeSec) {
+      const v = document.getElementById('vp');
+      if (!v) return;
+      v.currentTime = timeSec;
+      // Update the time display on the overlay
+      const t = document.getElementById('vp-time');
+      if (t) t.textContent = fmtTime(timeSec);
+    }
+
+    let _playing = false;
+    function togglePlay() {
+      const v = document.getElementById('vp');
+      if (!v) return;
+      const btn = document.getElementById('vp-play');
+      if (_playing) {
+        v.pause();
+        _playing = false;
+        if (btn) btn.textContent = '▶';
+      } else {
+        v.play();
+        _playing = true;
+        if (btn) btn.textContent = '⏸';
+      }
+    }
+
     function initTimeline() {
       const canvas = document.getElementById('timeline');
       const scroll = document.getElementById('tl-scroll');
-      // Don't capture video in closure — look it up fresh each time
-      // because render() rebuilds the DOM
-      const getVideo = () => document.getElementById('vp');
+      // Video is looked up fresh via seekVideo() and direct getElementById
       if (!canvas || !S.edl.length) return;
 
       _tlCanvas = canvas;
@@ -515,7 +542,8 @@
         }
         S.selectedSeg = found;
         S.playheadSec = inputSec;
-        const v1 = getVideo(); if (v1) { v1.pause(); v1.currentTime = inputSec; }
+        _playing = false;
+        seekVideo(inputSec);
         drawTimeline();
         updateSegPanel();
         updateTimeDisplay();
@@ -539,7 +567,8 @@
         if (_dragging === 'playhead') {
           const inputSec = tlXtoInputTime(mx);
           S.playheadSec = Math.max(0, Math.min(inputSec, S.totalInputDur));
-          const v2 = getVideo(); if (v2) { v2.pause(); v2.currentTime = S.playheadSec; }
+          _playing = false;
+          seekVideo(S.playheadSec);
           drawTimeline();
           updateTimeDisplay();
         }
@@ -575,16 +604,24 @@
       canvas.onmouseup = stopDrag;
       canvas.onmouseleave = stopDrag;
 
-      // Sync playhead with video playback
-      const v0 = getVideo();
+      // Sync playhead when video is playing
+      const v0 = document.getElementById('vp');
       if (v0) {
         v0.ontimeupdate = () => {
           if (_dragging) return;
-          const vv = getVideo();
-          if (vv) S.playheadSec = vv.currentTime;
+          S.playheadSec = v0.currentTime;
+          const t = document.getElementById('vp-time');
+          if (t) t.textContent = fmtTime(v0.currentTime);
           drawTimeline();
           updateTimeDisplay();
         };
+        v0.onended = () => {
+          _playing = false;
+          const btn = document.getElementById('vp-play');
+          if (btn) btn.textContent = '▶';
+        };
+        // Set initial frame
+        v0.currentTime = S.playheadSec || 0;
       }
     }
 
