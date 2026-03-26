@@ -309,28 +309,48 @@ async function runDemo(demo: ActiveDemo, apiKey: string, instructions?: string):
   let startUrl = demo.url;
   let appLauncher: AppLauncher | null = null;
 
-  // If projectPath, analyze and launch
+  // If projectPath, analyze, plan, and launch
+  let task = demo.task;
   if (demo.projectPath && !startUrl) {
     demo.status = "planning";
     broadcast({ type: "demo_status", id: demo.id, status: "planning" });
 
     const projectInfo = await analyzeProject(demo.projectPath);
+    demo.log.push(`Analyzed: ${projectInfo.name} (${projectInfo.framework})`);
+    broadcast({ type: "demo_log", id: demo.id, message: `Analyzed: ${projectInfo.name} (${projectInfo.framework})` });
+
+    // Launch dev server
     appLauncher = new AppLauncher(logger);
     await appLauncher.start(demo.projectPath, projectInfo.startCommand, projectInfo.startUrl);
     startUrl = appLauncher.getActualUrl() || projectInfo.startUrl;
-
-    demo.log.push(`Analyzed: ${projectInfo.name} (${projectInfo.framework})`);
     demo.log.push(`Server started at ${startUrl}`);
     broadcast({ type: "demo_log", id: demo.id, message: `Server started at ${startUrl}` });
+
+    // Use showcase planner to generate a smart task from the code
+    if (!instructions) {
+      try {
+        process.env.ANTHROPIC_API_KEY = apiKey;
+        const scenarios = await planShowcase(projectInfo, demo.model, logger, 1, undefined);
+        if (scenarios.length > 0) {
+          task = scenarios[0].description;
+          demo.log.push(`Planned: ${scenarios[0].title}`);
+          broadcast({ type: "demo_log", id: demo.id, message: `Demo plan: ${scenarios[0].title}` });
+        }
+      } catch {
+        // Fall through to default task
+      }
+    }
+  }
+
+  // If no instructions and just a URL, use a smart default prompt
+  if (!instructions && !demo.projectPath) {
+    task = `You are creating a product demo video of this website. Take a screenshot first, then plan a compelling walkthrough that shows off the key features. Navigate through the main pages, interact with buttons and forms, scroll through content sections. Make it look like a natural product tour. When done, summarize what you demonstrated.`;
+  } else if (instructions) {
+    task = `${task}\n\nAdditional context: ${instructions}`;
   }
 
   demo.status = "recording";
   broadcast({ type: "demo_status", id: demo.id, status: "recording" });
-
-  // Build task
-  const task = instructions
-    ? `${demo.task}\n\nAdditional context: ${instructions}`
-    : demo.task;
 
   // Intercept console.log to capture agent output
   const origLog = console.log;
