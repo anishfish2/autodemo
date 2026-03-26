@@ -439,6 +439,7 @@
     // ── Timeline Canvas ──
     let _tlCtx = null, _tlCanvas = null, _tlPPS = 20;
     let _dragging = null;
+    let _stickyPlayhead = false; // Playhead follows mouse X until segment click
 
     // Compute layout: each segment gets an x position and width in output time
     function getSegLayout() {
@@ -604,13 +605,40 @@
       }
     }
 
+    // Check if a time is inside a cut segment
+    function isInCutSegment(timeSec) {
+      for (const seg of S.edl) {
+        if (seg.type === 'cut' && timeSec >= seg.startSec && timeSec < seg.endSec) {
+          return seg;
+        }
+      }
+      return null;
+    }
+
+    // Find the next non-cut time after a given time
+    function skipPastCut(timeSec) {
+      for (const seg of S.edl) {
+        if (seg.type === 'cut' && timeSec >= seg.startSec && timeSec < seg.endSec) {
+          return seg.endSec; // Jump to end of cut
+        }
+      }
+      return timeSec;
+    }
+
     // Animation loop for playback
     function startRenderLoop() {
       function tick() {
         if (!_playing) return;
-        renderPreviewFrame();
-        // Update playhead
         const v = document.getElementById('vp');
+        if (v) {
+          // Skip cut sections during playback
+          const cutSeg = isInCutSegment(v.currentTime);
+          if (cutSeg && !S.showCuts) {
+            v.currentTime = cutSeg.endSec;
+            S.playheadSec = cutSeg.endSec;
+          }
+        }
+        renderPreviewFrame();
         if (v) {
           S.playheadSec = v.currentTime;
           const t = document.getElementById('vp-time');
@@ -669,15 +697,41 @@
       drawTimeline();
       updateSegPanel();
 
-      // Mouse events for: click to select, drag playhead, drag segment edges
       // Mouse events — positions mapped through output-time layout
       canvas.onmousedown = (e) => {
         const mx = e.offsetX;
         const phX = inputTimeToTlX(S.playheadSec);
         const { layout } = getSegLayout();
 
-        // Near playhead?
+        // If in sticky mode, clicking a segment exits it
+        if (_stickyPlayhead) {
+          let found = -1;
+          for (const l of layout) {
+            const lx = l.x * _tlPPS;
+            const rx = (l.x + l.w) * _tlPPS;
+            if (mx >= lx && mx < rx) { found = l.idx; break; }
+          }
+          if (found >= 0) {
+            _stickyPlayhead = false;
+            S.selectedSeg = found;
+            S.selectedZoom = -1;
+            canvas.style.cursor = 'pointer';
+            drawTimeline();
+            updateSegPanel();
+          }
+          return;
+        }
+
+        // Click the playhead circle? Enter sticky mode
         if (Math.abs(mx - phX) < 10) {
+          const my = e.offsetY;
+          if (my < 15) { // Near the top circle
+            _stickyPlayhead = true;
+            canvas.style.cursor = 'col-resize';
+            e.preventDefault();
+            return;
+          }
+          // Otherwise normal drag
           _dragging = 'playhead';
           canvas.style.cursor = 'col-resize';
           e.preventDefault();
@@ -722,6 +776,18 @@
 
       canvas.onmousemove = (e) => {
         const mx = e.offsetX;
+
+        // Sticky playhead mode: follow mouse X
+        if (_stickyPlayhead) {
+          const inputSec = tlXtoInputTime(mx);
+          S.playheadSec = Math.max(0, Math.min(inputSec, S.totalInputDur));
+          seekVideo(S.playheadSec);
+          drawTimeline();
+          updateTimeDisplay();
+          canvas.style.cursor = 'col-resize';
+          return;
+        }
+
         if (!_dragging) {
           const { layout } = getSegLayout();
           let nearEdge = false;
@@ -770,10 +836,13 @@
 
       const stopDrag = () => {
         _dragging = null;
-        if (canvas) canvas.style.cursor = 'pointer';
+        if (!_stickyPlayhead && canvas) canvas.style.cursor = 'pointer';
       };
       canvas.onmouseup = stopDrag;
-      canvas.onmouseleave = stopDrag;
+      // Don't stop sticky mode on mouse leave — only on segment click
+      canvas.onmouseleave = () => {
+        if (!_stickyPlayhead) stopDrag();
+      };
 
       // Sync playhead when video is playing
       const v0 = document.getElementById('vp');
