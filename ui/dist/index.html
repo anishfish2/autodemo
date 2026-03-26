@@ -539,6 +539,44 @@
       video.addEventListener('seeked', () => {
         renderPreviewFrame();
       });
+
+      // Click on preview → create zoom at that spot
+      canvas.style.cursor = 'crosshair';
+      canvas.onclick = (e) => {
+        const rect = canvas.getBoundingClientRect();
+        // Map click position from display size to video coordinates
+        const displayW = rect.width;
+        const displayH = rect.height;
+        const videoW = canvas.width || 1;
+        const videoH = canvas.height || 1;
+        const clickVX = (e.clientX - rect.left) / displayW * videoW;
+        const clickVY = (e.clientY - rect.top) / displayH * videoH;
+
+        // Convert video coordinates to the agent's 1024x768 space
+        const cx = Math.round(clickVX / videoW * 1024);
+        const cy = Math.round(clickVY / videoH * 768);
+
+        // Create a zoom region at the current playhead position
+        const t = S.playheadSec;
+        const newZoom = {
+          startSec: Math.max(0, t - 0.5),
+          endSec: t + 2.5,
+          zoomLevel: 2.0,
+          cx,
+          cy,
+          auto: false,
+        };
+
+        S.zoomRegions.push(newZoom);
+        S.zoomRegions.sort((a, b) => a.startSec - b.startSec);
+        S.selectedZoom = S.zoomRegions.indexOf(newZoom);
+        S.selectedSeg = -1;
+
+        drawTimeline();
+        drawZoomTrack();
+        updateSegPanel();
+        renderPreviewFrame(); // Show the zoom immediately
+      };
     }
 
     function renderPreviewFrame() {
