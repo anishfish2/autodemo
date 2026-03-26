@@ -12,7 +12,9 @@ import { autoEdit } from "../src/recording/auto-editor.js";
 import pino from "pino";
 
 const TRACES_DIR = resolve("traces");
-const UI_DIR = resolve("ui/dist");
+// UI files are relative to the package install location, not cwd
+const __dirname_pkg = new URL(".", import.meta.url).pathname;
+const UI_DIR = resolve(join(__dirname_pkg, "..", "..", "ui", "dist"));
 
 // --- Active demos ---
 interface ActiveDemo {
