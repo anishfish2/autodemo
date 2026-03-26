@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>demoo</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0a0a; color: #e0e0e0; }
+    .app { max-width: 960px; margin: 0 auto; padding: 24px; }
+    h1 { font-size: 28px; font-weight: 700; margin-bottom: 8px; }
+    h2 { font-size: 20px; font-weight: 600; margin-bottom: 16px; color: #999; }
+    .subtitle { color: #666; margin-bottom: 32px; }
+
+    /* Forms */
+    .card { background: #141414; border: 1px solid #222; border-radius: 12px; padding: 24px; margin-bottom: 24px; }
+    label { display: block; font-size: 13px; color: #888; margin-bottom: 6px; font-weight: 500; }
+    input[type="text"], textarea, select {
+      width: 100%; padding: 10px 14px; background: #1a1a1a; border: 1px solid #333;
+      border-radius: 8px; color: #e0e0e0; font-size: 14px; outline: none;
+    }
+    input:focus, textarea:focus, select:focus { border-color: #4f8ff7; }
+    textarea { min-height: 80px; resize: vertical; font-family: inherit; }
+    select { appearance: none; cursor: pointer; }
+    .row { display: flex; gap: 12px; margin-bottom: 16px; }
+    .row > * { flex: 1; }
+
+    /* Buttons */
+    .btn { padding: 10px 24px; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; border: none; transition: all 0.15s; }
+    .btn-primary { background: #4f8ff7; color: white; }
+    .btn-primary:hover { background: #3a7de6; }
+    .btn-primary:disabled { background: #333; color: #666; cursor: not-allowed; }
+    .btn-secondary { background: #222; color: #ccc; border: 1px solid #333; }
+    .btn-secondary:hover { background: #2a2a2a; }
+
+    /* Progress */
+    .progress-bar { width: 100%; height: 4px; background: #222; border-radius: 2px; overflow: hidden; margin: 16px 0; }
+    .progress-fill { height: 100%; background: #4f8ff7; transition: width 0.3s; border-radius: 2px; }
+    .progress-fill.active { animation: pulse 1.5s ease-in-out infinite; }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+    .log { background: #0d0d0d; border: 1px solid #222; border-radius: 8px; padding: 12px; max-height: 300px; overflow-y: auto; font-family: 'SF Mono', monospace; font-size: 12px; line-height: 1.6; }
+    .log-line { color: #888; }
+    .log-line.thinking { color: #4f8ff7; }
+    .log-line.action { color: #4ade80; }
+
+    /* Video player */
+    video { width: 100%; border-radius: 8px; background: #000; }
+
+    /* Timeline */
+    .timeline-container { margin: 16px 0; }
+    .timeline { position: relative; height: 48px; background: #1a1a1a; border-radius: 8px; overflow: hidden; cursor: pointer; }
+    .timeline-segment { position: absolute; top: 0; height: 100%; transition: opacity 0.15s; }
+    .timeline-segment.keep { background: #2d5a2d; border-right: 1px solid #0a0a0a; }
+    .timeline-segment.cut { background: #1a1a1a; border-right: 1px solid #0a0a0a; }
+    .timeline-segment:hover { opacity: 0.8; }
+    .timeline-segment.selected { outline: 2px solid #4f8ff7; outline-offset: -2px; z-index: 1; }
+    .timeline-playhead { position: absolute; top: 0; width: 2px; height: 100%; background: #fff; z-index: 2; pointer-events: none; }
+    .timeline-time { display: flex; justify-content: space-between; font-size: 11px; color: #666; margin-top: 4px; }
+
+    /* Segment editor */
+    .segment-editor { background: #1a1a1a; border: 1px solid #333; border-radius: 8px; padding: 16px; margin-top: 12px; }
+    .segment-editor h3 { font-size: 14px; margin-bottom: 8px; }
+    .speed-controls { display: flex; gap: 8px; margin-top: 8px; }
+    .speed-btn { padding: 6px 14px; border-radius: 6px; font-size: 12px; cursor: pointer; border: 1px solid #333; background: #222; color: #ccc; }
+    .speed-btn.active { background: #4f8ff7; color: white; border-color: #4f8ff7; }
+
+    /* Demo list */
+    .demo-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 16px; }
+    .demo-card { background: #141414; border: 1px solid #222; border-radius: 10px; padding: 12px; cursor: pointer; transition: border-color 0.15s; }
+    .demo-card:hover { border-color: #444; }
+    .demo-card .thumb { width: 100%; aspect-ratio: 16/9; background: #222; border-radius: 6px; margin-bottom: 8px; display: flex; align-items: center; justify-content: center; color: #444; }
+    .demo-card .name { font-size: 13px; font-weight: 500; }
+    .demo-card .meta { font-size: 11px; color: #666; margin-top: 4px; }
+
+    /* Settings modal */
+    .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 100; }
+    .modal { background: #141414; border: 1px solid #333; border-radius: 16px; padding: 32px; width: 480px; max-width: 90vw; }
+    .modal h2 { margin-bottom: 20px; }
+    .modal .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 24px; }
+
+    /* Tabs */
+    .tabs { display: flex; gap: 4px; margin-bottom: 24px; }
+    .tab { padding: 8px 16px; border-radius: 6px; font-size: 13px; cursor: pointer; color: #888; background: transparent; border: none; }
+    .tab.active { color: #fff; background: #222; }
+
+    .hidden { display: none; }
+    .mb { margin-bottom: 16px; }
+    .mt { margin-top: 16px; }
+    .text-center { text-align: center; }
+  </style>
+</head>
+<body>
+  <div id="root" class="app"></div>
+  <script>
+    // --- State ---
+    let state = {
+      view: 'dashboard', // dashboard | progress | editor | settings
+      config: {},
+      demos: [],
+      activeDemo: null,
+      activeDemoId: null,
+      selectedSegment: null,
+      ws: null,
+    };
+
+    // --- API ---
+    const API = 'http://localhost:3456/api';
+
+    async function api(path, opts = {}) {
+      const res = await fetch(API + path, {
+        headers: { 'Content-Type': 'application/json' },
+        ...opts,
+        body: opts.body ? JSON.stringify(opts.body) : undefined,
+      });
+      return res.json();
+    }
+
+    // --- WebSocket ---
+    function connectWS() {
+      const ws = new WebSocket('ws://localhost:3456');
+      ws.onmessage = (e) => {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'demo_log' && state.activeDemo) {
+          state.activeDemo.log = state.activeDemo.log || [];
+          state.activeDemo.log.push(msg.message);
+          render();
+        }
+        if (msg.type === 'demo_done') {
+          if (state.activeDemo) {
+            state.activeDemo.status = 'done';
+            state.activeDemo.editedVideo = msg.editedVideo;
+            state.activeDemo.rawVideo = msg.rawVideo;
+            state.view = 'editor';
+          }
+          render();
+        }
+        if (msg.type === 'demo_error') {
+          if (state.activeDemo) {
+            state.activeDemo.status = 'error';
+            state.activeDemo.error = msg.error;
+          }
+          render();
+        }
+        if (msg.type === 'demo_status' && state.activeDemo) {
+          state.activeDemo.status = msg.status;
+          render();
+        }
+      };
+      ws.onclose = () => setTimeout(connectWS, 2000);
+      state.ws = ws;
+    }
+
+    // --- Render ---
+    function render() {
+      const root = document.getElementById('root');
+      switch (state.view) {
+        case 'dashboard': root.innerHTML = renderDashboard(); break;
+        case 'progress': root.innerHTML = renderProgress(); break;
+        case 'editor': root.innerHTML = renderEditor(); break;
+        case 'settings': root.innerHTML = renderSettings(); break;
+      }
+      attachEvents();
+    }
+
+    function renderDashboard() {
+      return `
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:32px">
+          <div>
+            <h1>demoo</h1>
+            <p class="subtitle">Automated demo video generation</p>
+          </div>
+          <button class="btn btn-secondary" onclick="showSettings()">Settings</button>
+        </div>
+        <div class="card">
+          <div class="mb">
+            <label>URL or project path</label>
+            <input type="text" id="input-url" placeholder="https://myapp.com or /path/to/project" />
+          </div>
+          <div class="mb">
+            <label>Instructions (optional)</label>
+            <textarea id="input-instructions" placeholder="Login with user@example.com / pass123. Show the dashboard, create a new item..."></textarea>
+          </div>
+          <div class="row mb">
+            <div>
+              <label>Model</label>
+              <select id="input-model">
+                <option value="claude-opus-4-6">Claude Opus 4.6</option>
+                <option value="claude-sonnet-4-20250514" selected>Claude Sonnet 4</option>
+              </select>
+            </div>
+          </div>
+          <div class="text-center mt">
+            <button class="btn btn-primary" id="btn-start" onclick="startDemo()">Start Demo</button>
+          </div>
+        </div>
+        ${state.demos.length > 0 ? `
+          <h2>Recent Demos</h2>
+          <div class="demo-grid">
+            ${state.demos.map(d => `
+              <div class="demo-card" onclick="openDemo('${d.id}')">
+                <div class="thumb">▶</div>
+                <div class="name">${d.task || d.id}</div>
+                <div class="meta">${d.status} · ${new Date(d.startedAt).toLocaleDateString()}</div>
+              </div>
+            `).join('')}
+          </div>
+        ` : ''}
+      `;
+    }
+
+    function renderProgress() {
+      const demo = state.activeDemo;
+      if (!demo) return '<p>No active demo</p>';
+      const logs = (demo.log || []).slice(-30);
+      return `
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px">
+          <h1>${demo.status === 'planning' ? 'Planning...' : 'Recording...'}</h1>
+          <button class="btn btn-secondary" onclick="state.view='dashboard';render()">Cancel</button>
+        </div>
+        <div class="card">
+          <p style="color:#888">${demo.task}</p>
+          <div class="progress-bar"><div class="progress-fill active" style="width:${demo.status === 'error' ? '100' : '60'}%"></div></div>
+          ${demo.status === 'error' ? `<p style="color:#ef4444">Error: ${demo.error}</p>` : ''}
+          <div class="log">
+            ${logs.map(l => {
+              const cls = l.includes('[Claude]') ? 'thinking' : l.includes('[Action]') ? 'action' : '';
+              return `<div class="log-line ${cls}">${escHtml(l)}</div>`;
+            }).join('')}
+          </div>
+        </div>
+      `;
+    }
+
+    function renderEditor() {
+      const demo = state.activeDemo;
+      if (!demo) return '<p>No demo to edit</p>';
+      const videoSrc = demo.editedVideo || demo.rawVideo || '';
+      return `
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px">
+          <h1>Edit Demo</h1>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-secondary" onclick="state.view='dashboard';loadDemos();render()">← Back</button>
+            <a href="${videoSrc}" download class="btn btn-primary" style="text-decoration:none">↓ Export MP4</a>
+          </div>
+        </div>
+        <div class="card">
+          <video id="video-player" controls src="${videoSrc}"></video>
+        </div>
+        <div class="card">
+          <label>Video</label>
+          <div class="tabs">
+            <button class="tab ${demo.editedVideo ? 'active' : ''}" onclick="switchVideo('edited')">Edited</button>
+            <button class="tab ${!demo.editedVideo ? 'active' : ''}" onclick="switchVideo('raw')">Raw</button>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderSettings() {
+      return `
+        <div class="modal-overlay" onclick="if(event.target===this){state.view='dashboard';render()}">
+          <div class="modal">
+            <h2>Settings</h2>
+            <div class="mb">
+              <label>Anthropic API Key</label>
+              <input type="text" id="input-apikey" placeholder="sk-ant-..." value="${state.config.anthropicApiKey || ''}" />
+            </div>
+            <div class="mb">
+              <label>Default Model</label>
+              <select id="input-default-model">
+                <option value="claude-opus-4-6" ${state.config.defaultModel === 'claude-opus-4-6' ? 'selected' : ''}>Claude Opus 4.6</option>
+                <option value="claude-sonnet-4-20250514" ${state.config.defaultModel === 'claude-sonnet-4-20250514' ? 'selected' : ''}>Claude Sonnet 4</option>
+              </select>
+            </div>
+            <div class="actions">
+              <button class="btn btn-secondary" onclick="state.view='dashboard';render()">Cancel</button>
+              <button class="btn btn-primary" onclick="saveSettings()">Save</button>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    // --- Actions ---
+    async function startDemo() {
+      const url = document.getElementById('input-url').value.trim();
+      const instructions = document.getElementById('input-instructions').value.trim();
+      const model = document.getElementById('input-model').value;
+
+      if (!url) return alert('Enter a URL or project path');
+
+      const isPath = url.startsWith('/') || url.startsWith('~') || url.startsWith('.');
+      const body = {
+        task: instructions || 'Explore the website and demonstrate its features',
+        url: isPath ? undefined : url,
+        projectPath: isPath ? url : undefined,
+        model,
+        instructions,
+      };
+
+      const res = await api('/demo', { method: 'POST', body });
+      if (res.error) return alert(res.error);
+
+      state.activeDemoId = res.id;
+      state.activeDemo = { id: res.id, status: 'recording', task: body.task, log: [], startedAt: Date.now() };
+      state.view = 'progress';
+      render();
+    }
+
+    async function openDemo(id) {
+      const demo = await api(`/demo/${id}`);
+      state.activeDemo = demo;
+      state.activeDemoId = id;
+      // Fix video URLs
+      if (demo.rawVideo && !demo.rawVideo.startsWith('http')) {
+        demo.rawVideo = `/api/demo/${id}/video/raw`;
+      }
+      if (demo.editedVideo && !demo.editedVideo.startsWith('http')) {
+        demo.editedVideo = `/api/demo/${id}/video/edited`;
+      }
+      state.view = 'editor';
+      render();
+    }
+
+    function switchVideo(type) {
+      const video = document.getElementById('video-player');
+      const demo = state.activeDemo;
+      if (!demo || !video) return;
+      video.src = type === 'edited'
+        ? `/api/demo/${demo.id}/video/edited`
+        : `/api/demo/${demo.id}/video/raw`;
+    }
+
+    function showSettings() {
+      state.view = 'settings';
+      render();
+    }
+
+    async function saveSettings() {
+      const apiKey = document.getElementById('input-apikey').value.trim();
+      const model = document.getElementById('input-default-model').value;
+      await api('/config', { method: 'PUT', body: { anthropicApiKey: apiKey, defaultModel: model } });
+      state.config = await api('/config');
+      state.view = 'dashboard';
+      render();
+    }
+
+    async function loadDemos() {
+      state.demos = await api('/demos');
+    }
+
+    function escHtml(s) {
+      return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+
+    function attachEvents() {}
+
+    // --- Init ---
+    async function init() {
+      state.config = await api('/config');
+      await loadDemos();
+      connectWS();
+
+      // If no API key, show settings first
+      if (!state.config.anthropicApiKey) {
+        state.view = 'settings';
+      }
+
+      render();
+    }
+
+    init();
+  </script>
+</body>
+</html>

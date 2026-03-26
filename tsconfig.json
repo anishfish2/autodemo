@@ -13,6 +13,6 @@
     "sourceMap": true,
     "resolveJsonModule": true
   },
-  "include": ["src/**/*", "bin/**/*"],
+  "include": ["src/**/*", "bin/**/*", "server/**/*"],
   "exclude": ["node_modules", "dist", "traces", "tests"]
 }

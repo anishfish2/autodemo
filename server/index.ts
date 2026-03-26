@@ -1,0 +1,404 @@
+import http from "node:http";
+import { readFileSync, existsSync, readdirSync, statSync, createReadStream } from "node:fs";
+import { join, extname, resolve } from "node:path";
+import { WebSocketServer, WebSocket } from "ws";
+import { loadConfig, saveConfig, getApiKey } from "./config.js";
+import { runNativeComputerUseAgent } from "../src/agent/computer-use-native.js";
+import { analyzeProject } from "../src/showcase/project-analyzer.js";
+import { planShowcase } from "../src/showcase/showcase-planner.js";
+import { AppLauncher } from "../src/showcase/app-launcher.js";
+import { ActionLog } from "../src/recording/action-log.js";
+import { autoEdit } from "../src/recording/auto-editor.js";
+import pino from "pino";
+
+const TRACES_DIR = resolve("traces");
+const UI_DIR = resolve("ui/dist");
+
+// --- Active demos ---
+interface ActiveDemo {
+  id: string;
+  status: "planning" | "recording" | "editing" | "done" | "error";
+  task: string;
+  url?: string;
+  projectPath?: string;
+  model: string;
+  startedAt: number;
+  log: string[];
+  traceDir?: string;
+  rawVideo?: string;
+  editedVideo?: string;
+  edl?: Array<{ startSec: number; endSec: number; type: string; label: string; speed?: number }>;
+  error?: string;
+}
+
+const demos = new Map<string, ActiveDemo>();
+const wsClients = new Set<WebSocket>();
+
+function broadcast(msg: object): void {
+  const data = JSON.stringify(msg);
+  for (const ws of wsClients) {
+    if (ws.readyState === WebSocket.OPEN) ws.send(data);
+  }
+}
+
+// --- MIME types ---
+const MIME: Record<string, string> = {
+  ".html": "text/html",
+  ".js": "application/javascript",
+  ".css": "text/css",
+  ".json": "application/json",
+  ".png": "image/png",
+  ".mp4": "video/mp4",
+  ".webm": "video/webm",
+  ".svg": "image/svg+xml",
+  ".ico": "image/x-icon",
+};
+
+// --- HTTP Server ---
+function parseBody(req: http.IncomingMessage): Promise<any> {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", () => {
+      try { resolve(JSON.parse(body)); } catch { resolve({}); }
+    });
+    req.on("error", reject);
+  });
+}
+
+function sendJson(res: http.ServerResponse, data: any, status = 200): void {
+  res.writeHead(status, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
+  res.end(JSON.stringify(data));
+}
+
+function sendFile(res: http.ServerResponse, filePath: string): void {
+  if (!existsSync(filePath)) {
+    res.writeHead(404);
+    res.end("Not found");
+    return;
+  }
+  const ext = extname(filePath);
+  const mime = MIME[ext] || "application/octet-stream";
+  const stat = statSync(filePath);
+  res.writeHead(200, {
+    "Content-Type": mime,
+    "Content-Length": stat.size,
+    "Access-Control-Allow-Origin": "*",
+  });
+  createReadStream(filePath).pipe(res);
+}
+
+async function handleRequest(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+): Promise<void> {
+  const url = new URL(req.url || "/", `http://${req.headers.host}`);
+  const path = url.pathname;
+  const method = req.method || "GET";
+
+  // CORS preflight
+  if (method === "OPTIONS") {
+    res.writeHead(200, {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type",
+    });
+    res.end();
+    return;
+  }
+
+  // --- API Routes ---
+
+  // Config
+  if (path === "/api/config" && method === "GET") {
+    const config = loadConfig();
+    // Mask API key
+    sendJson(res, {
+      ...config,
+      anthropicApiKey: config.anthropicApiKey ? "sk-...configured" : undefined,
+    });
+    return;
+  }
+
+  if (path === "/api/config" && method === "PUT") {
+    const body = await parseBody(req);
+    saveConfig(body);
+    sendJson(res, { ok: true });
+    return;
+  }
+
+  // List demos
+  if (path === "/api/demos" && method === "GET") {
+    const list: any[] = [];
+    // From active demos
+    for (const [id, demo] of demos) {
+      list.push({
+        id,
+        status: demo.status,
+        task: demo.task,
+        startedAt: demo.startedAt,
+        editedVideo: demo.editedVideo ? `/api/demo/${id}/video/edited` : undefined,
+        rawVideo: demo.rawVideo ? `/api/demo/${id}/video/raw` : undefined,
+      });
+    }
+    // From trace dirs
+    if (existsSync(TRACES_DIR)) {
+      for (const dir of readdirSync(TRACES_DIR).filter((d) => d.startsWith("agent_")).sort().reverse().slice(0, 20)) {
+        if (demos.has(dir)) continue;
+        const traceDir = join(TRACES_DIR, dir);
+        const editedPath = join(traceDir, "edited.mp4");
+        const rawPath = join(traceDir, "recording.mp4");
+        const logPath = join(traceDir, "action-log.json");
+        list.push({
+          id: dir,
+          status: "done",
+          task: "",
+          startedAt: statSync(traceDir).birthtimeMs,
+          editedVideo: existsSync(editedPath) ? `/api/demo/${dir}/video/edited` : undefined,
+          rawVideo: existsSync(rawPath) ? `/api/demo/${dir}/video/raw` : undefined,
+          hasActionLog: existsSync(logPath),
+        });
+      }
+    }
+    sendJson(res, list);
+    return;
+  }
+
+  // Start a demo
+  if (path === "/api/demo" && method === "POST") {
+    const body = await parseBody(req);
+    const { task, url: inputUrl, projectPath, model, instructions } = body;
+
+    const apiKey = getApiKey();
+    if (!apiKey) {
+      sendJson(res, { error: "No API key configured. Go to Settings." }, 400);
+      return;
+    }
+
+    const id = `agent_${new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14)}_web`;
+    const demo: ActiveDemo = {
+      id,
+      status: "recording",
+      task: task || instructions || "Explore the website",
+      url: inputUrl,
+      projectPath,
+      model: model || loadConfig().defaultModel,
+      startedAt: Date.now(),
+      log: [],
+    };
+    demos.set(id, demo);
+
+    broadcast({ type: "demo_started", id });
+    sendJson(res, { id });
+
+    // Run in background
+    runDemo(demo, apiKey, instructions).catch((err) => {
+      demo.status = "error";
+      demo.error = err.message;
+      broadcast({ type: "demo_error", id, error: err.message });
+    });
+    return;
+  }
+
+  // Get demo status
+  const demoMatch = path.match(/^\/api\/demo\/([^/]+)$/);
+  if (demoMatch && method === "GET") {
+    const id = demoMatch[1];
+    const demo = demos.get(id);
+    if (demo) {
+      sendJson(res, demo);
+    } else {
+      // Check traces dir
+      const traceDir = join(TRACES_DIR, id);
+      if (existsSync(traceDir)) {
+        const logPath = join(traceDir, "action-log.json");
+        sendJson(res, {
+          id,
+          status: "done",
+          traceDir,
+          rawVideo: existsSync(join(traceDir, "recording.mp4")) ? `/api/demo/${id}/video/raw` : undefined,
+          editedVideo: existsSync(join(traceDir, "edited.mp4")) ? `/api/demo/${id}/video/edited` : undefined,
+          edl: existsSync(logPath) ? JSON.parse(readFileSync(logPath, "utf-8")) : undefined,
+        });
+      } else {
+        sendJson(res, { error: "Not found" }, 404);
+      }
+    }
+    return;
+  }
+
+  // Serve video files
+  const videoMatch = path.match(/^\/api\/demo\/([^/]+)\/video\/(raw|edited)$/);
+  if (videoMatch && method === "GET") {
+    const [, id, type] = videoMatch;
+    const filename = type === "edited" ? "edited.mp4" : "recording.mp4";
+    // Check active demo first
+    const demo = demos.get(id);
+    if (demo?.traceDir) {
+      sendFile(res, join(demo.traceDir, filename));
+      return;
+    }
+    // Check traces dir
+    sendFile(res, join(TRACES_DIR, id, filename));
+    return;
+  }
+
+  // Get/update EDL
+  const edlMatch = path.match(/^\/api\/demo\/([^/]+)\/edl$/);
+  if (edlMatch && method === "GET") {
+    const id = edlMatch[1];
+    const logPath = join(TRACES_DIR, id, "action-log.json");
+    if (existsSync(logPath)) {
+      sendJson(res, JSON.parse(readFileSync(logPath, "utf-8")));
+    } else {
+      sendJson(res, { error: "No action log" }, 404);
+    }
+    return;
+  }
+
+  // Re-export with modified EDL
+  const exportMatch = path.match(/^\/api\/demo\/([^/]+)\/export$/);
+  if (exportMatch && method === "POST") {
+    const id = exportMatch[1];
+    const traceDir = join(TRACES_DIR, id);
+    const rawVideo = join(traceDir, "recording.mp4");
+    const actionLogPath = join(traceDir, "action-log.json");
+    const editedPath = join(traceDir, "edited.mp4");
+
+    if (!existsSync(rawVideo) || !existsSync(actionLogPath)) {
+      sendJson(res, { error: "Missing files" }, 404);
+      return;
+    }
+
+    try {
+      await autoEdit({
+        inputVideo: rawVideo,
+        actionLog: actionLogPath,
+        outputVideo: editedPath,
+      });
+      sendJson(res, { ok: true, video: `/api/demo/${id}/video/edited` });
+    } catch (err: any) {
+      sendJson(res, { error: err.message }, 500);
+    }
+    return;
+  }
+
+  // --- Static Files (UI) ---
+  let filePath = path === "/" ? "/index.html" : path;
+  const fullPath = join(UI_DIR, filePath);
+  if (existsSync(fullPath) && statSync(fullPath).isFile()) {
+    sendFile(res, fullPath);
+    return;
+  }
+
+  // SPA fallback
+  const indexPath = join(UI_DIR, "index.html");
+  if (existsSync(indexPath)) {
+    sendFile(res, indexPath);
+    return;
+  }
+
+  res.writeHead(404);
+  res.end("Not found — run `npm run build:ui` first");
+}
+
+// --- Demo Runner ---
+async function runDemo(demo: ActiveDemo, apiKey: string, instructions?: string): Promise<void> {
+  const logger = pino({ level: "info" });
+
+  let startUrl = demo.url;
+  let appLauncher: AppLauncher | null = null;
+
+  // If projectPath, analyze and launch
+  if (demo.projectPath && !startUrl) {
+    demo.status = "planning";
+    broadcast({ type: "demo_status", id: demo.id, status: "planning" });
+
+    const projectInfo = await analyzeProject(demo.projectPath);
+    appLauncher = new AppLauncher(logger);
+    await appLauncher.start(demo.projectPath, projectInfo.startCommand, projectInfo.startUrl);
+    startUrl = appLauncher.getActualUrl() || projectInfo.startUrl;
+
+    demo.log.push(`Analyzed: ${projectInfo.name} (${projectInfo.framework})`);
+    demo.log.push(`Server started at ${startUrl}`);
+    broadcast({ type: "demo_log", id: demo.id, message: `Server started at ${startUrl}` });
+  }
+
+  demo.status = "recording";
+  broadcast({ type: "demo_status", id: demo.id, status: "recording" });
+
+  // Build task
+  const task = instructions
+    ? `${demo.task}\n\nAdditional context: ${instructions}`
+    : demo.task;
+
+  // Intercept console.log to capture agent output
+  const origLog = console.log;
+  console.log = (...args: any[]) => {
+    const msg = args.map(String).join(" ");
+    demo.log.push(msg);
+    broadcast({ type: "demo_log", id: demo.id, message: msg });
+    origLog(...args);
+  };
+
+  process.env.ANTHROPIC_API_KEY = apiKey;
+
+  try {
+    const result = await runNativeComputerUseAgent({
+      task,
+      startUrl: startUrl || "",
+      model: demo.model,
+      maxIterations: loadConfig().maxIterations,
+      maxTotalSteps: 200,
+      totalTimeoutMs: loadConfig().timeout,
+      chunkSize: 5,
+      headless: false,
+      traceDir: TRACES_DIR,
+      verbose: false,
+      slowMo: 0,
+      computerUse: true,
+    });
+
+    demo.traceDir = result.traceDir;
+    demo.rawVideo = join(result.traceDir, "recording.mp4");
+    demo.editedVideo = existsSync(join(result.traceDir, "edited.mp4"))
+      ? join(result.traceDir, "edited.mp4")
+      : undefined;
+    demo.status = "done";
+
+    broadcast({
+      type: "demo_done",
+      id: demo.id,
+      rawVideo: `/api/demo/${demo.id}/video/raw`,
+      editedVideo: demo.editedVideo ? `/api/demo/${demo.id}/video/edited` : undefined,
+    });
+  } catch (err: any) {
+    demo.status = "error";
+    demo.error = err.message;
+    broadcast({ type: "demo_error", id: demo.id, error: err.message });
+  } finally {
+    console.log = origLog;
+    if (appLauncher) await appLauncher.stop();
+  }
+}
+
+// --- Start Server ---
+export function startServer(port = 3456): void {
+  const server = http.createServer((req, res) => {
+    handleRequest(req, res).catch((err) => {
+      console.error("Server error:", err);
+      res.writeHead(500);
+      res.end("Internal error");
+    });
+  });
+
+  const wss = new WebSocketServer({ server });
+  wss.on("connection", (ws) => {
+    wsClients.add(ws);
+    ws.on("close", () => wsClients.delete(ws));
+  });
+
+  server.listen(port, () => {
+    console.log(`\ndemoo running at http://localhost:${port}\n`);
+  });
+}

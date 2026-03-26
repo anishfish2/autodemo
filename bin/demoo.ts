@@ -16,7 +16,15 @@ function readPlanFile(filePath: string): unknown {
 const program = new Command()
   .name("demoo")
   .description("macOS computer-use agent — execute structured automation plans")
-  .version("0.1.0");
+  .version("0.1.0")
+  .action(async () => {
+    // No subcommand = launch web UI
+    const { startServer } = await import("../server/index.js");
+    startServer(3456);
+    // Open browser
+    const { exec } = await import("node:child_process");
+    setTimeout(() => exec("open http://localhost:3456"), 1000);
+  });
 
 program
   .command("validate")
