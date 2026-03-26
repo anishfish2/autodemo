@@ -330,44 +330,32 @@
           <div class="card" style="padding:0;overflow:hidden;border-radius:10px">
             <video id="vp" src="${src}" controls></video>
           </div>
-          <div class="card">
-            <div class="timeline-toolbar">
-              <div class="tabs">
-                ${d.editedVideo ? `<button class="tab ${S.activeVideoType==='edited'?'active':''}" onclick="switchVideo('edited')">Edited</button>` : ''}
-                <button class="tab ${S.activeVideoType==='raw'?'active':''}" onclick="switchVideo('raw')">Raw</button>
-              </div>
-              <div class="info">
-                <span class="playback-time" id="time-display">${fmtTime(S.playheadSec)} / ${fmtTime(S.totalOutputDur)}</span>
-                &nbsp;·&nbsp; ${S.totalInputDur.toFixed(1)}s → ${S.totalOutputDur.toFixed(1)}s
-              </div>
+
+          <!-- Toolbar: playback controls + video source toggle -->
+          <div class="flex-between" style="padding:4px 0">
+            <div class="tabs">
+              ${d.editedVideo ? `<button class="tab ${S.activeVideoType==='edited'?'active':''}" onclick="switchVideo('edited')">Edited</button>` : ''}
+              <button class="tab ${S.activeVideoType==='raw'?'active':''}" onclick="switchVideo('raw')">Raw</button>
             </div>
-            <div class="timeline-canvas-wrap" id="tl-wrap">
-              <canvas id="timeline" height="64"></canvas>
+            <span class="playback-time" id="time-display">${fmtTime(S.playheadSec)} / ${fmtTime(S.totalOutputDur)}</span>
+          </div>
+
+          <!-- Timeline: time markers + clip blocks -->
+          <div class="card" style="padding:16px 16px 12px">
+            <!-- Time markers row -->
+            <div id="tl-markers" style="position:relative;height:20px;margin-bottom:4px;overflow:hidden"></div>
+            <!-- Canvas for clip blocks + playhead -->
+            <div class="timeline-canvas-wrap" id="tl-wrap" style="border:none;background:transparent">
+              <canvas id="timeline" height="56"></canvas>
             </div>
           </div>
 
-          ${seg ? `
-          <div class="segment-panel">
-            <div class="flex-between">
-              <h3>${escHtml(seg.label)}</h3>
-              <span class="time-label">${fmtTime(seg.startSec)} → ${fmtTime(seg.endSec)} (${(seg.endSec-seg.startSec).toFixed(1)}s)</span>
-            </div>
-            <div class="row mt">
-              <div>
-                <label>Speed</label>
-                <div style="display:flex;gap:6px;margin-top:4px">
-                  ${[0.5, 1, 1.5, 2, 4].map(sp => `<button class="speed-btn ${seg.speed===sp && seg.type==='keep'?'active':''}" onclick="setSegSpeed(${S.selectedSeg},${sp},'keep')">${sp}x</button>`).join('')}
-                  <button class="speed-btn cut ${seg.type==='cut'?'active':''}" onclick="setSegSpeed(${S.selectedSeg},0,'cut')">Cut</button>
-                </div>
-              </div>
-            </div>
-          </div>` : `
-          <div class="segment-panel" style="text-align:center;color:#666;padding:24px">
-            Click a segment on the timeline to edit it
-          </div>`}
+          <!-- Segment editor panel (updated without full re-render) -->
+          <div id="seg-panel"></div>
 
+          <!-- Export bar -->
           <div class="flex-between">
-            <button class="btn btn-secondary" onclick="reExport()">Re-export edited video</button>
+            <button class="btn btn-secondary btn-sm" onclick="reExport()">Re-export edited video</button>
             <div style="display:flex;gap:8px;align-items:center">
               <select id="export-format" style="width:auto;padding:6px 12px;font-size:13px;border-radius:6px;background:#1a1a1a;border:1px solid #333;color:#ccc">
                 <option value="mp4">MP4</option>
@@ -398,27 +386,31 @@
     }
 
     // ── Timeline Canvas ──
+    let _tlCtx = null, _tlCanvas = null, _tlPPS = 12;
+
     function initTimeline() {
       const canvas = document.getElementById('timeline');
       const wrap = document.getElementById('tl-wrap');
       const video = document.getElementById('vp');
       if (!canvas || !S.edl.length) return;
 
-      const PX_PER_SEC = Math.max(12, wrap.clientWidth / S.totalInputDur);
-      S.timelineZoom = PX_PER_SEC;
-      canvas.width = Math.ceil(S.totalInputDur * PX_PER_SEC);
-      canvas.height = 64;
-      const ctx = canvas.getContext('2d');
+      _tlPPS = Math.max(12, wrap.clientWidth / S.totalInputDur);
+      canvas.width = Math.ceil(S.totalInputDur * _tlPPS);
+      canvas.height = 56;
+      _tlCanvas = canvas;
+      _tlCtx = canvas.getContext('2d');
 
-      drawTimeline(ctx, canvas);
+      // Build time markers
+      buildTimeMarkers();
+      drawTimeline();
+      updateSegPanel();
 
-      // Click to select segment / move playhead
+      // Click to select segment / move playhead — NO full re-render
       canvas.onclick = (e) => {
         const rect = canvas.getBoundingClientRect();
         const x = e.clientX - rect.left + wrap.scrollLeft;
-        const sec = x / PX_PER_SEC;
+        const sec = x / _tlPPS;
 
-        // Find segment
         let found = -1;
         for (let i = 0; i < S.edl.length; i++) {
           if (sec >= S.edl[i].startSec && sec < S.edl[i].endSec) { found = i; break; }
@@ -426,99 +418,139 @@
         S.selectedSeg = found;
         S.playheadSec = inputToOutputTime(sec);
 
-        // Sync video
-        if (video && S.activeVideoType === 'raw') {
-          video.currentTime = sec;
-        } else if (video) {
-          video.currentTime = S.playheadSec;
-        }
+        if (video && S.activeVideoType === 'raw') video.currentTime = sec;
+        else if (video) video.currentTime = S.playheadSec;
 
-        render();
+        drawTimeline();
+        updateSegPanel();
       };
 
-      // Sync playhead with video
+      // Sync playhead with video timeupdate
       if (video) {
         video.ontimeupdate = () => {
-          if (S.activeVideoType === 'raw') {
-            S.playheadSec = inputToOutputTime(video.currentTime);
-          } else {
-            S.playheadSec = video.currentTime;
-          }
+          if (S.activeVideoType === 'raw') S.playheadSec = inputToOutputTime(video.currentTime);
+          else S.playheadSec = video.currentTime;
           const td = document.getElementById('time-display');
           if (td) td.textContent = `${fmtTime(S.playheadSec)} / ${fmtTime(S.totalOutputDur)}`;
-          // Redraw playhead
-          drawTimeline(ctx, canvas);
+          drawTimeline();
         };
       }
     }
 
-    function drawTimeline(ctx, canvas) {
+    function buildTimeMarkers() {
+      const el = document.getElementById('tl-markers');
+      if (!el) return;
+      const pps = _tlPPS;
+      let html = '';
+      const step = S.totalInputDur > 60 ? 10 : S.totalInputDur > 20 ? 5 : 2;
+      for (let t = 0; t <= S.totalInputDur; t += step) {
+        const x = t * pps;
+        html += `<span style="position:absolute;left:${x}px;top:0;font-size:10px;color:#555;font-family:'SF Mono',monospace">${fmtTime(t)}</span>`;
+      }
+      // Dot markers every 1 second
+      for (let t = 0; t <= S.totalInputDur; t += 1) {
+        const x = t * pps;
+        html += `<span style="position:absolute;left:${x-1}px;top:16px;width:2px;height:2px;background:#333;border-radius:1px"></span>`;
+      }
+      el.innerHTML = html;
+      el.style.width = Math.ceil(S.totalInputDur * pps) + 'px';
+    }
+
+    function drawTimeline() {
+      const ctx = _tlCtx, canvas = _tlCanvas;
+      if (!ctx || !canvas) return;
       const w = canvas.width, h = canvas.height;
-      const pps = S.timelineZoom;
+      const pps = _tlPPS;
       ctx.clearRect(0, 0, w, h);
 
-      // Draw segments
+      const CLIP_Y = 4, CLIP_H = h - 8, R = 6;
+
+      // Draw segments as rounded clip blocks
       for (let i = 0; i < S.edl.length; i++) {
         const seg = S.edl[i];
-        const x = seg.startSec * pps;
-        const sw = (seg.endSec - seg.startSec) * pps;
+        const x = Math.round(seg.startSec * pps);
+        const sw = Math.round((seg.endSec - seg.startSec) * pps);
+        if (sw < 1) continue;
 
+        const selected = i === S.selectedSeg;
+
+        // Colors
+        let fillColor, textColor;
         if (seg.type === 'cut') {
-          ctx.fillStyle = i === S.selectedSeg ? '#2a1515' : '#151515';
+          fillColor = selected ? '#2d1a1a' : '#1a1212';
+          textColor = '#664444';
         } else {
-          const speed = seg.speed || 1;
-          if (speed <= 0.5) ctx.fillStyle = i === S.selectedSeg ? '#1a3a5a' : '#0f2a40';
-          else if (speed === 1) ctx.fillStyle = i === S.selectedSeg ? '#1a3a1a' : '#0f2a0f';
-          else ctx.fillStyle = i === S.selectedSeg ? '#3a3a1a' : '#2a2a0f';
+          // Orange/amber like Screen Studio
+          fillColor = selected ? '#c2710e' : '#a05e0c';
+          textColor = '#fff';
         }
-        ctx.fillRect(x, 0, sw, h);
 
-        // Border
-        ctx.strokeStyle = i === S.selectedSeg ? '#4f8ff7' : '#333';
-        ctx.lineWidth = i === S.selectedSeg ? 2 : 0.5;
-        ctx.strokeRect(x, 0, sw, h);
+        // Rounded rect
+        ctx.beginPath();
+        ctx.roundRect(x + 1, CLIP_Y, sw - 2, CLIP_H, R);
+        ctx.fillStyle = fillColor;
+        ctx.fill();
 
-        // Label (if wide enough)
-        if (sw > 40) {
-          ctx.fillStyle = seg.type === 'cut' ? '#555' : '#888';
+        if (selected) {
+          ctx.strokeStyle = '#f0c040';
+          ctx.lineWidth = 2;
+          ctx.stroke();
+        }
+
+        // Label inside clip
+        if (sw > 50) {
+          ctx.fillStyle = seg.type === 'cut' ? '#553333' : 'rgba(255,255,255,0.5)';
           ctx.font = '10px -apple-system, sans-serif';
-          ctx.fillText(seg.label, x + 4, h - 6);
+          ctx.fillText(seg.label, x + 8, CLIP_Y + 16);
         }
 
-        // Speed badge
-        if (seg.type === 'keep' && seg.speed !== 1 && sw > 30) {
-          ctx.fillStyle = '#4f8ff7';
-          ctx.font = 'bold 10px -apple-system, sans-serif';
-          ctx.fillText(`${seg.speed}x`, x + 4, 14);
+        // Duration + speed badge centered
+        if (sw > 35) {
+          const dur = seg.endSec - seg.startSec;
+          const speedTxt = seg.type === 'cut' ? '✂' : `${dur.toFixed(1)}s · ${seg.speed}x`;
+          ctx.fillStyle = textColor;
+          ctx.font = 'bold 11px -apple-system, sans-serif';
+          const tw = ctx.measureText(speedTxt).width;
+          const tx = x + Math.max(8, (sw - tw) / 2);
+          ctx.fillText(speedTxt, tx, CLIP_Y + CLIP_H - 8);
         }
-        if (seg.type === 'cut' && sw > 20) {
-          ctx.fillStyle = '#dc2626';
-          ctx.font = 'bold 10px -apple-system, sans-serif';
-          ctx.fillText('✂', x + 4, 14);
-        }
-      }
-
-      // Time markers every 5 seconds
-      ctx.fillStyle = '#444';
-      ctx.font = '9px SF Mono, monospace';
-      for (let t = 0; t <= S.totalInputDur; t += 5) {
-        const x = t * pps;
-        ctx.fillRect(x, 0, 0.5, h);
-        ctx.fillText(fmtTime(t), x + 2, 12);
       }
 
       // Playhead
       const inputTime = outputToInputTime(S.playheadSec);
-      const px = inputTime * pps;
-      ctx.fillStyle = '#fff';
+      const px = Math.round(inputTime * pps);
+      // Line
+      ctx.fillStyle = '#4f8ff7';
       ctx.fillRect(px - 1, 0, 2, h);
-      // Playhead handle
+      // Handle (circle on top)
       ctx.beginPath();
-      ctx.moveTo(px - 6, 0);
-      ctx.lineTo(px + 6, 0);
-      ctx.lineTo(px, 8);
-      ctx.closePath();
+      ctx.arc(px, 2, 5, 0, Math.PI * 2);
+      ctx.fillStyle = '#4f8ff7';
       ctx.fill();
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+
+    function updateSegPanel() {
+      const panel = document.getElementById('seg-panel');
+      if (!panel) return;
+      const seg = S.edl[S.selectedSeg];
+      if (!seg) {
+        panel.innerHTML = `<div class="segment-panel" style="text-align:center;color:#555;padding:20px;font-size:13px">Click a clip on the timeline to edit it</div>`;
+        return;
+      }
+      panel.innerHTML = `
+        <div class="segment-panel">
+          <div class="flex-between">
+            <h3>${escHtml(seg.label)}</h3>
+            <span class="time-label">${fmtTime(seg.startSec)} → ${fmtTime(seg.endSec)} &nbsp; (${(seg.endSec-seg.startSec).toFixed(1)}s)</span>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:12px">
+            ${[0.5, 1, 1.5, 2, 4].map(sp => `<button class="speed-btn ${seg.speed===sp && seg.type==='keep'?'active':''}" onclick="setSegSpeed(${S.selectedSeg},${sp},'keep')">${sp}x</button>`).join('')}
+            <button class="speed-btn cut ${seg.type==='cut'?'active':''}" onclick="setSegSpeed(${S.selectedSeg},0,'cut')">Cut</button>
+          </div>
+        </div>`;
     }
 
     // ── Segment editing ──
@@ -527,7 +559,11 @@
       S.edl[idx].type = type;
       S.edl[idx].speed = speed;
       recalcDurations();
-      render();
+      drawTimeline();
+      updateSegPanel();
+      // Update duration display
+      const td = document.getElementById('time-display');
+      if (td) td.textContent = `${fmtTime(S.playheadSec)} / ${fmtTime(S.totalOutputDur)}`;
     }
 
     async function reExport() {
