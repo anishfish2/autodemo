@@ -180,15 +180,6 @@
             <label>Instructions (optional)</label>
             <textarea id="input-instructions" placeholder="Login with user@example.com / pass123. Show the dashboard, create a new item..."></textarea>
           </div>
-          <div class="row mb">
-            <div>
-              <label>Model</label>
-              <select id="input-model">
-                <option value="claude-opus-4-6">Claude Opus 4.6</option>
-                <option value="claude-sonnet-4-20250514" selected>Claude Sonnet 4</option>
-              </select>
-            </div>
-          </div>
           <div class="text-center mt">
             <button class="btn btn-primary" id="btn-start" onclick="startDemo()">Start Demo</button>
           </div>
@@ -234,23 +225,38 @@
     function renderEditor() {
       const demo = state.activeDemo;
       if (!demo) return '<p>No demo to edit</p>';
-      const videoSrc = demo.editedVideo || demo.rawVideo || '';
+      // Track which video is active
+      if (!state.activeVideoType) {
+        state.activeVideoType = demo.editedVideo ? 'edited' : 'raw';
+      }
+      const videoSrc = state.activeVideoType === 'edited' && demo.editedVideo
+        ? demo.editedVideo
+        : demo.rawVideo || '';
+      const demoId = demo.id;
       return `
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px">
           <h1>Edit Demo</h1>
           <div style="display:flex;gap:8px">
-            <button class="btn btn-secondary" onclick="state.view='dashboard';loadDemos();render()">← Back</button>
-            <a href="${videoSrc}" download class="btn btn-primary" style="text-decoration:none">↓ Export MP4</a>
+            <button class="btn btn-secondary" onclick="state.view='dashboard';state.activeVideoType=null;loadDemos();render()">← Back</button>
           </div>
         </div>
         <div class="card">
-          <video id="video-player" controls src="${videoSrc}"></video>
-        </div>
-        <div class="card">
-          <label>Video</label>
-          <div class="tabs">
-            <button class="tab ${demo.editedVideo ? 'active' : ''}" onclick="switchVideo('edited')">Edited</button>
-            <button class="tab ${!demo.editedVideo ? 'active' : ''}" onclick="switchVideo('raw')">Raw</button>
+          <video id="video-player" controls src="${videoSrc}" style="margin-bottom:16px"></video>
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <div class="tabs" style="margin:0">
+              ${demo.editedVideo ? `<button class="tab ${state.activeVideoType === 'edited' ? 'active' : ''}" onclick="switchVideo('edited')">Edited</button>` : ''}
+              <button class="tab ${state.activeVideoType === 'raw' ? 'active' : ''}" onclick="switchVideo('raw')">Raw</button>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center">
+              <select id="export-format" style="width:auto;padding:6px 12px;font-size:13px">
+                <option value="mp4">MP4 (H.264)</option>
+                <option value="webm">WebM (VP9)</option>
+                <option value="mp4-social">MP4 (Social — 1080x1080)</option>
+                <option value="mp4-story">MP4 (Story — 1080x1920)</option>
+                <option value="gif">GIF</option>
+              </select>
+              <button class="btn btn-primary" onclick="exportVideo('${demoId}')">↓ Export</button>
+            </div>
           </div>
         </div>
       `;
@@ -265,13 +271,6 @@
               <label>Anthropic API Key</label>
               <input type="text" id="input-apikey" placeholder="sk-ant-..." value="${state.config.anthropicApiKey || ''}" />
             </div>
-            <div class="mb">
-              <label>Default Model</label>
-              <select id="input-default-model">
-                <option value="claude-opus-4-6" ${state.config.defaultModel === 'claude-opus-4-6' ? 'selected' : ''}>Claude Opus 4.6</option>
-                <option value="claude-sonnet-4-20250514" ${state.config.defaultModel === 'claude-sonnet-4-20250514' ? 'selected' : ''}>Claude Sonnet 4</option>
-              </select>
-            </div>
             <div class="actions">
               <button class="btn btn-secondary" onclick="state.view='dashboard';render()">Cancel</button>
               <button class="btn btn-primary" onclick="saveSettings()">Save</button>
@@ -285,7 +284,6 @@
     async function startDemo() {
       const url = document.getElementById('input-url').value.trim();
       const instructions = document.getElementById('input-instructions').value.trim();
-      const model = document.getElementById('input-model').value;
 
       if (!url) return alert('Enter a URL or project path');
 
@@ -294,7 +292,7 @@
         task: instructions || 'Explore the website and demonstrate its features',
         url: isPath ? undefined : url,
         projectPath: isPath ? url : undefined,
-        model,
+        model: 'claude-opus-4-6',
         instructions,
       };
 
@@ -323,12 +321,45 @@
     }
 
     function switchVideo(type) {
-      const video = document.getElementById('video-player');
-      const demo = state.activeDemo;
-      if (!demo || !video) return;
-      video.src = type === 'edited'
-        ? `/api/demo/${demo.id}/video/edited`
-        : `/api/demo/${demo.id}/video/raw`;
+      state.activeVideoType = type;
+      render();
+    }
+
+    async function exportVideo(demoId) {
+      const format = document.getElementById('export-format').value;
+      const videoType = state.activeVideoType || 'edited';
+      const srcUrl = `/api/demo/${demoId}/video/${videoType}`;
+
+      if (format === 'mp4') {
+        // Direct download of the current video
+        const a = document.createElement('a');
+        a.href = srcUrl;
+        a.download = `demo-${demoId}.mp4`;
+        a.click();
+        return;
+      }
+
+      // For other formats, request server-side conversion
+      const btn = event.target;
+      btn.disabled = true;
+      btn.textContent = 'Converting...';
+      try {
+        const res = await api(`/demo/${demoId}/export`, {
+          method: 'POST',
+          body: { format, source: videoType },
+        });
+        if (res.error) {
+          alert('Export failed: ' + res.error);
+        } else if (res.downloadUrl) {
+          const a = document.createElement('a');
+          a.href = res.downloadUrl;
+          a.download = `demo-${demoId}.${format === 'gif' ? 'gif' : format.includes('webm') ? 'webm' : 'mp4'}`;
+          a.click();
+        }
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '↓ Export';
+      }
     }
 
     function showSettings() {
@@ -338,8 +369,7 @@
 
     async function saveSettings() {
       const apiKey = document.getElementById('input-apikey').value.trim();
-      const model = document.getElementById('input-default-model').value;
-      await api('/config', { method: 'PUT', body: { anthropicApiKey: apiKey, defaultModel: model } });
+      await api('/config', { method: 'PUT', body: { anthropicApiKey: apiKey, defaultModel: 'claude-opus-4-6' } });
       state.config = await api('/config');
       state.view = 'dashboard';
       render();

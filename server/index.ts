@@ -256,10 +256,89 @@ async function handleRequest(
     return;
   }
 
-  // Re-export with modified EDL
+  // Export in different formats
   const exportMatch = path.match(/^\/api\/demo\/([^/]+)\/export$/);
   if (exportMatch && method === "POST") {
     const id = exportMatch[1];
+    const body = await parseBody(req);
+    const format = body.format || "mp4";
+    const source = body.source || "edited";
+    const traceDir = join(TRACES_DIR, id);
+
+    // Find source video
+    const demo = demos.get(id);
+    const sourceFile = source === "edited"
+      ? join(demo?.traceDir || traceDir, "edited.mp4")
+      : join(demo?.traceDir || traceDir, "recording.mp4");
+
+    if (!existsSync(sourceFile)) {
+      sendJson(res, { error: "Source video not found" }, 404);
+      return;
+    }
+
+    const outputDir = demo?.traceDir || traceDir;
+    let outputFile: string;
+    let ffmpegArgs: string;
+
+    switch (format) {
+      case "webm":
+        outputFile = join(outputDir, "export.webm");
+        ffmpegArgs = `-c:v libvpx-vp9 -crf 30 -b:v 0 -an`;
+        break;
+      case "mp4-social":
+        outputFile = join(outputDir, "export-social.mp4");
+        ffmpegArgs = `-vf "scale=1080:1080:force_original_aspect_ratio=decrease,pad=1080:1080:(ow-iw)/2:(oh-ih)/2:black" -c:v libx264 -preset medium -crf 22 -pix_fmt yuv420p -an`;
+        break;
+      case "mp4-story":
+        outputFile = join(outputDir, "export-story.mp4");
+        ffmpegArgs = `-vf "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black" -c:v libx264 -preset medium -crf 22 -pix_fmt yuv420p -an`;
+        break;
+      case "gif":
+        outputFile = join(outputDir, "export.gif");
+        ffmpegArgs = `-vf "fps=12,scale=640:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=128[p];[s1][p]paletteuse=dither=bayer" -loop 0`;
+        break;
+      default:
+        outputFile = join(outputDir, "export.mp4");
+        ffmpegArgs = `-c:v libx264 -preset medium -crf 20 -pix_fmt yuv420p -an`;
+    }
+
+    try {
+      const { execSync: execS } = await import("node:child_process");
+      execS(`ffmpeg -y -i "${sourceFile}" ${ffmpegArgs} "${outputFile}" 2>/dev/null`);
+      // Serve via API
+      const ext = format === "gif" ? "gif" : format.includes("webm") ? "webm" : "mp4";
+      sendJson(res, { ok: true, downloadUrl: `/api/demo/${id}/export/${ext}` });
+    } catch (err: any) {
+      sendJson(res, { error: `Conversion failed: ${err.message}` }, 500);
+    }
+    return;
+  }
+
+  // Serve exported files
+  const exportFileMatch = path.match(/^\/api\/demo\/([^/]+)\/export\/(mp4|webm|gif)$/);
+  if (exportFileMatch && method === "GET") {
+    const [, id, ext] = exportFileMatch;
+    const demo = demos.get(id);
+    const traceDir = demo?.traceDir || join(TRACES_DIR, id);
+    const candidates = [
+      join(traceDir, `export.${ext}`),
+      join(traceDir, `export-social.mp4`),
+      join(traceDir, `export-story.mp4`),
+    ];
+    const found = candidates.find((f) => existsSync(f));
+    if (found) {
+      sendFile(res, found);
+    } else {
+      res.writeHead(404);
+      res.end("Export not found");
+    }
+    return;
+  }
+
+  // Re-run auto-edit
+  const reEditMatch = path.match(/^\/api\/demo\/([^/]+)\/re-edit$/);
+  if (reEditMatch && method === "POST") {
+    const id = reEditMatch[1];
     const traceDir = join(TRACES_DIR, id);
     const rawVideo = join(traceDir, "recording.mp4");
     const actionLogPath = join(traceDir, "action-log.json");
