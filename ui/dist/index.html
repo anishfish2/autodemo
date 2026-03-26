@@ -89,12 +89,15 @@
       activeVideoType: null,
       // Editor state
       edl: [],           // Edit decision list segments
+      zoomRegions: [],   // Zoom regions: { startSec, endSec, zoomLevel, cx, cy, auto }
       selectedSeg: -1,   // Selected segment index
-      playheadSec: 0,    // Current playhead in OUTPUT time
+      selectedZoom: -1,  // Selected zoom region index
+      playheadSec: 0,
       totalInputDur: 0,
       totalOutputDur: 0,
       timelineZoom: 1,   // pixels per second
-      showCuts: false,   // toggle cut sections visibility
+      showCuts: false,
+      motionBlur: false, // cursor motion blur
       isDragging: false,
       ws: null,
     };
@@ -147,9 +150,42 @@
         const entries = await api(`/demo/${demoId}/edl`);
         if (Array.isArray(entries)) {
           S.edl = buildEDLFromEntries(entries);
+          S.zoomRegions = buildZoomRegions(entries);
           recalcDurations();
         }
       } catch {}
+    }
+
+    function buildZoomRegions(entries) {
+      // Auto-generate zoom regions from click events
+      const regions = [];
+      for (const e of entries) {
+        if (e.type === 'action' && e.action === 'left_click' && e.coords) {
+          const t = e.t / 1000;
+          regions.push({
+            startSec: Math.max(0, t - 0.3),
+            endSec: t + 1.5,
+            zoomLevel: 2.0,
+            cx: e.coords[0],
+            cy: e.coords[1],
+            auto: true,
+          });
+        }
+      }
+      // Merge overlapping regions
+      regions.sort((a, b) => a.startSec - b.startSec);
+      const merged = [];
+      for (const r of regions) {
+        const prev = merged[merged.length - 1];
+        if (prev && r.startSec <= prev.endSec) {
+          prev.endSec = Math.max(prev.endSec, r.endSec);
+          prev.cx = r.cx; // Use latest click position
+          prev.cy = r.cy;
+        } else {
+          merged.push({ ...r });
+        }
+      }
+      return merged;
     }
 
     function buildEDLFromEntries(entries) {
@@ -271,7 +307,7 @@
         case 'editor': root.innerHTML = renderEditor(); break;
         case 'settings': root.innerHTML = renderSettings(); break;
       }
-      if (S.view === 'editor') initTimeline();
+      if (S.view === 'editor') { initTimeline(); initZoomTrack(); }
     }
 
     function renderDashboard() {
@@ -350,17 +386,21 @@
                   <input type="range" id="tl-zoom" min="8" max="80" value="20" style="width:100px;accent-color:#4f8ff7" oninput="onZoomChange(this.value)">
                 </div>
                 <label style="display:flex;align-items:center;gap:4px;cursor:pointer;margin:0;font-size:11px;color:#888">
-                  <input type="checkbox" ${S.showCuts?'checked':''} onchange="S.showCuts=this.checked;resizeTimeline();buildTimeMarkers();drawTimeline()" style="accent-color:#4f8ff7"> Show cuts
+                  <input type="checkbox" ${S.showCuts?'checked':''} onchange="S.showCuts=this.checked;resizeTimeline();buildTimeMarkers();drawTimeline();drawZoomTrack()" style="accent-color:#4f8ff7"> Show cuts
+                </label>
+                <label style="display:flex;align-items:center;gap:4px;cursor:pointer;margin:0;font-size:11px;color:#888">
+                  <input type="checkbox" ${S.motionBlur?'checked':''} onchange="S.motionBlur=this.checked" style="accent-color:#4f8ff7"> Motion blur
                 </label>
               </div>
             </div>
             <div id="tl-scroll" style="overflow-x:auto;overflow-y:hidden;position:relative;border-radius:6px;background:#111;padding:4px 0">
               <div id="tl-markers" style="position:relative;height:18px;pointer-events:none"></div>
               <canvas id="timeline" height="52" style="display:block;cursor:pointer"></canvas>
+              <canvas id="zoom-track" height="36" style="display:block;cursor:pointer;margin-top:4px"></canvas>
             </div>
           </div>
 
-          <!-- Segment editor panel (updated without full re-render) -->
+          <!-- Segment / Zoom editor panel -->
           <div id="seg-panel"></div>
 
           <!-- Export bar -->
@@ -544,6 +584,7 @@
           if (mx >= lx && mx < rx) { found = l.idx; break; }
         }
         S.selectedSeg = found;
+        S.selectedZoom = -1; // Deselect zoom when clicking clip
         S.playheadSec = inputSec;
         _playing = false;
         seekVideo(inputSec);
@@ -727,14 +768,44 @@
       ctx.strokeStyle = '#fff';
       ctx.lineWidth = 1.5;
       ctx.stroke();
+
+      // Also redraw zoom track
+      drawZoomTrack();
     }
 
     function updateSegPanel() {
       const panel = document.getElementById('seg-panel');
       if (!panel) return;
+
+      // Zoom region selected?
+      const zr = S.zoomRegions[S.selectedZoom];
+      if (zr) {
+        panel.innerHTML = `
+          <div class="segment-panel" style="border-color:#6366f1">
+            <div class="flex-between">
+              <h3 style="color:#a5b4fc">Zoom Region ${zr.auto ? '(Auto)' : ''}</h3>
+              <span class="time-label">${fmtTime(zr.startSec)} → ${fmtTime(zr.endSec)} &nbsp; (${(zr.endSec-zr.startSec).toFixed(1)}s)</span>
+            </div>
+            <div style="display:flex;gap:12px;margin-top:12px;align-items:center;flex-wrap:wrap">
+              <div>
+                <label>Zoom Level</label>
+                <div style="display:flex;gap:6px;margin-top:4px">
+                  ${[1.5, 2.0, 2.5, 3.0, 4.0].map(z => `<button class="speed-btn ${Math.abs(zr.zoomLevel-z)<0.1?'active':''}" onclick="setZoomLevel(${S.selectedZoom},${z})" style="${Math.abs(zr.zoomLevel-z)<0.1?'background:#6366f1;border-color:#6366f1':''}">${z}x</button>`).join('')}
+                </div>
+              </div>
+              <div>
+                <label>Center: (${zr.cx}, ${zr.cy})</label>
+              </div>
+              <button class="speed-btn cut" onclick="removeZoomRegion(${S.selectedZoom})" style="margin-left:auto">Remove</button>
+            </div>
+          </div>`;
+        return;
+      }
+
+      // Clip segment selected?
       const seg = S.edl[S.selectedSeg];
       if (!seg) {
-        panel.innerHTML = `<div class="segment-panel" style="text-align:center;color:#555;padding:20px;font-size:13px">Click a clip on the timeline to edit it</div>`;
+        panel.innerHTML = `<div class="segment-panel" style="text-align:center;color:#555;padding:20px;font-size:13px">Click a clip or zoom region to edit it</div>`;
         return;
       }
       const dur = seg.endSec - seg.startSec;
@@ -749,6 +820,154 @@
             <button class="speed-btn cut ${seg.type==='cut'?'active':''}" onclick="setSegSpeed(${S.selectedSeg},0,'cut')">Cut</button>
           </div>
         </div>`;
+    }
+
+    // ── Zoom Track ──
+    function drawZoomTrack() {
+      const canvas = document.getElementById('zoom-track');
+      if (!canvas) return;
+      const { layout, totalW } = getSegLayout();
+      const pps = _tlPPS;
+      canvas.width = Math.ceil(totalW * pps);
+      const ctx = canvas.getContext('2d');
+      const h = canvas.height;
+      ctx.clearRect(0, 0, canvas.width, h);
+
+      // Background
+      ctx.fillStyle = '#0d0d0d';
+      ctx.fillRect(0, 0, canvas.width, h);
+
+      for (let i = 0; i < S.zoomRegions.length; i++) {
+        const zr = S.zoomRegions[i];
+        const x1 = inputTimeToTlX(zr.startSec);
+        const x2 = inputTimeToTlX(zr.endSec);
+        const w = x2 - x1;
+        if (w < 2) continue;
+
+        const sel = i === S.selectedZoom;
+
+        // Purple zoom block
+        ctx.beginPath();
+        ctx.roundRect(x1 + 1, 2, w - 2, h - 4, 5);
+        ctx.fillStyle = sel ? '#6366f1' : '#4f46e5';
+        ctx.fill();
+
+        if (sel) {
+          ctx.strokeStyle = '#a5b4fc';
+          ctx.lineWidth = 2;
+          ctx.stroke();
+        }
+
+        // Edge handles
+        if (w > 12) {
+          ctx.fillStyle = 'rgba(255,255,255,0.2)';
+          ctx.fillRect(x1 + 2, 6, 3, h - 12);
+          ctx.fillRect(x1 + w - 5, 6, 3, h - 12);
+        }
+
+        // Label
+        if (w > 40) {
+          ctx.fillStyle = 'rgba(255,255,255,0.6)';
+          ctx.font = '9px -apple-system, sans-serif';
+          ctx.fillText('Zoom', x1 + 8, 14);
+        }
+        if (w > 25) {
+          ctx.fillStyle = '#fff';
+          ctx.font = 'bold 10px -apple-system, sans-serif';
+          const txt = `${zr.zoomLevel}x${zr.auto ? ' · Auto' : ''}`;
+          const tw = ctx.measureText(txt).width;
+          ctx.fillText(txt, x1 + Math.max(6, (w - tw) / 2), h - 7);
+        }
+      }
+
+      // Playhead line
+      const px = Math.round(inputTimeToTlX(S.playheadSec));
+      ctx.fillStyle = '#4f8ff7';
+      ctx.fillRect(px - 1, 0, 2, h);
+    }
+
+    function initZoomTrack() {
+      const canvas = document.getElementById('zoom-track');
+      if (!canvas) return;
+      drawZoomTrack();
+
+      canvas.onmousedown = (e) => {
+        const mx = e.offsetX;
+        const inputSec = tlXtoInputTime(mx);
+
+        // Check if clicking on a zoom region
+        let found = -1;
+        for (let i = 0; i < S.zoomRegions.length; i++) {
+          const zr = S.zoomRegions[i];
+          const x1 = inputTimeToTlX(zr.startSec);
+          const x2 = inputTimeToTlX(zr.endSec);
+
+          // Edge drag
+          if (Math.abs(mx - x1) < 6) {
+            _dragging = { type: 'zoom-edge', idx: i, side: 'left' };
+            canvas.style.cursor = 'col-resize';
+            return;
+          }
+          if (Math.abs(mx - x2) < 6) {
+            _dragging = { type: 'zoom-edge', idx: i, side: 'right' };
+            canvas.style.cursor = 'col-resize';
+            return;
+          }
+
+          if (mx >= x1 && mx <= x2) { found = i; break; }
+        }
+
+        S.selectedZoom = found;
+        S.selectedSeg = -1; // Deselect clip
+        drawTimeline();
+        drawZoomTrack();
+        updateSegPanel();
+      };
+
+      canvas.onmousemove = (e) => {
+        const mx = e.offsetX;
+        if (!_dragging) {
+          let nearEdge = false;
+          for (const zr of S.zoomRegions) {
+            const x1 = inputTimeToTlX(zr.startSec);
+            const x2 = inputTimeToTlX(zr.endSec);
+            if (Math.abs(mx - x1) < 6 || Math.abs(mx - x2) < 6) { nearEdge = true; break; }
+          }
+          canvas.style.cursor = nearEdge ? 'col-resize' : 'pointer';
+          return;
+        }
+
+        if (_dragging?.type === 'zoom-edge') {
+          const inputSec = tlXtoInputTime(mx);
+          const zr = S.zoomRegions[_dragging.idx];
+          if (_dragging.side === 'left') {
+            zr.startSec = Math.max(0, Math.min(inputSec, zr.endSec - 0.2));
+          } else {
+            zr.endSec = Math.max(zr.startSec + 0.2, Math.min(inputSec, S.totalInputDur));
+          }
+          zr.auto = false;
+          drawZoomTrack();
+          updateSegPanel();
+        }
+      };
+
+      canvas.onmouseup = () => { _dragging = null; canvas.style.cursor = 'pointer'; };
+      canvas.onmouseleave = () => { _dragging = null; canvas.style.cursor = 'pointer'; };
+    }
+
+    function setZoomLevel(idx, level) {
+      if (idx < 0 || idx >= S.zoomRegions.length) return;
+      S.zoomRegions[idx].zoomLevel = level;
+      S.zoomRegions[idx].auto = false;
+      drawZoomTrack();
+      updateSegPanel();
+    }
+
+    function removeZoomRegion(idx) {
+      S.zoomRegions.splice(idx, 1);
+      S.selectedZoom = -1;
+      drawZoomTrack();
+      updateSegPanel();
     }
 
     // ── Segment editing ──
