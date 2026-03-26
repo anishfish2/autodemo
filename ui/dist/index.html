@@ -316,14 +316,14 @@
       const d = S.activeDemo;
       if (!d) return '';
       if (!S.activeVideoType) S.activeVideoType = d.editedVideo ? 'edited' : 'raw';
-      const src = S.activeVideoType === 'edited' && d.editedVideo ? d.editedVideo : (d.rawVideo || '');
-      const seg = S.edl[S.selectedSeg];
+      // Always use raw video — timeline is non-destructive editor
+      const src = d.rawVideo || '';
 
       return `
         <div class="flex-between" style="margin-bottom:16px">
           <h1>Edit Demo</h1>
           <div style="display:flex;gap:8px">
-            <button class="btn btn-secondary btn-sm" onclick="S.view='dashboard';S.activeVideoType=null;loadDemos();render()">← Back</button>
+            <button class="btn btn-secondary btn-sm" onclick="S.view='dashboard';loadDemos();render()">← Back</button>
           </div>
         </div>
         <div class="editor-layout">
@@ -331,13 +331,9 @@
             <video id="vp" src="${src}" controls></video>
           </div>
 
-          <!-- Toolbar: playback controls + video source toggle -->
           <div class="flex-between" style="padding:4px 0">
-            <div class="tabs">
-              ${d.editedVideo ? `<button class="tab ${S.activeVideoType==='edited'?'active':''}" onclick="switchVideo('edited')">Edited</button>` : ''}
-              <button class="tab ${S.activeVideoType==='raw'?'active':''}" onclick="switchVideo('raw')">Raw</button>
-            </div>
-            <span class="playback-time" id="time-display">${fmtTime(S.playheadSec)} / ${fmtTime(S.totalOutputDur)}</span>
+            <span style="font-size:12px;color:#666">Scrub through raw footage · Edit segments below · Export when done</span>
+            <span class="playback-time" id="time-display">${fmtTime(S.playheadSec)} / ${fmtTime(S.totalInputDur)}</span>
           </div>
 
           <!-- Timeline -->
@@ -421,20 +417,20 @@
       updateSegPanel();
 
       // Mouse events for: click to select, drag playhead, drag segment edges
+      // All scrubbing is in INPUT time (raw video time)
       canvas.onmousedown = (e) => {
         const x = e.offsetX;
         const sec = x / _tlPPS;
-        const phSec = outputToInputTime(S.playheadSec);
-        const phX = phSec * _tlPPS;
+        const phX = S.playheadSec * _tlPPS;
 
-        // Check if near playhead (drag it)
+        // Near playhead? Drag it
         if (Math.abs(x - phX) < 10) {
           _dragging = 'playhead';
           canvas.style.cursor = 'col-resize';
           return;
         }
 
-        // Check if near a segment edge (drag to resize)
+        // Near a segment edge? Drag to resize
         for (let i = 0; i < S.edl.length; i++) {
           const seg = S.edl[i];
           const lx = seg.startSec * _tlPPS;
@@ -451,17 +447,14 @@
           }
         }
 
-        // Click to select segment
+        // Click: select segment + move playhead
         let found = -1;
         for (let i = 0; i < S.edl.length; i++) {
           if (sec >= S.edl[i].startSec && sec < S.edl[i].endSec) { found = i; break; }
         }
         S.selectedSeg = found;
-
-        // Also set playhead
-        S.playheadSec = inputToOutputTime(sec);
-        if (video && S.activeVideoType === 'raw') video.currentTime = sec;
-        else if (video) video.currentTime = S.playheadSec;
+        S.playheadSec = sec;
+        if (video) video.currentTime = sec;
 
         drawTimeline();
         updateSegPanel();
@@ -469,7 +462,6 @@
 
       canvas.onmousemove = (e) => {
         if (!_dragging) {
-          // Show resize cursor near edges
           const x = e.offsetX;
           let nearEdge = false;
           for (const seg of S.edl) {
@@ -477,7 +469,7 @@
               nearEdge = true; break;
             }
           }
-          const phX = outputToInputTime(S.playheadSec) * _tlPPS;
+          const phX = S.playheadSec * _tlPPS;
           canvas.style.cursor = (nearEdge || Math.abs(x - phX) < 10) ? 'col-resize' : 'pointer';
           return;
         }
@@ -485,11 +477,10 @@
         const sec = Math.max(0, Math.min(S.totalInputDur, e.offsetX / _tlPPS));
 
         if (_dragging === 'playhead') {
-          S.playheadSec = inputToOutputTime(sec);
-          if (video && S.activeVideoType === 'raw') video.currentTime = sec;
-          else if (video) video.currentTime = S.playheadSec;
+          S.playheadSec = sec;
+          if (video) video.currentTime = sec;
           const td = document.getElementById('time-display');
-          if (td) td.textContent = `${fmtTime(S.playheadSec)} / ${fmtTime(S.totalOutputDur)}`;
+          if (td) td.textContent = `${fmtTime(sec)} / ${fmtTime(S.totalInputDur)}`;
           drawTimeline();
         }
 
@@ -521,14 +512,13 @@
       canvas.onmouseup = stopDrag;
       canvas.onmouseleave = stopDrag;
 
-      // Sync playhead with video
+      // Sync playhead with video — always in input (raw) time
       if (video) {
         video.ontimeupdate = () => {
-          if (_dragging) return; // Don't fight with user drag
-          if (S.activeVideoType === 'raw') S.playheadSec = inputToOutputTime(video.currentTime);
-          else S.playheadSec = video.currentTime;
+          if (_dragging) return;
+          S.playheadSec = video.currentTime;
           const td = document.getElementById('time-display');
-          if (td) td.textContent = `${fmtTime(S.playheadSec)} / ${fmtTime(S.totalOutputDur)}`;
+          if (td) td.textContent = `${fmtTime(S.playheadSec)} / ${fmtTime(S.totalInputDur)}`;
           drawTimeline();
         };
       }
@@ -615,9 +605,8 @@
         }
       }
 
-      // Playhead
-      const inSec = outputToInputTime(S.playheadSec);
-      const px = Math.round(inSec * pps);
+      // Playhead (S.playheadSec is already in input/raw time)
+      const px = Math.round(S.playheadSec * pps);
       ctx.fillStyle = '#4f8ff7';
       ctx.fillRect(px - 1, 0, 2, h);
       ctx.beginPath();
@@ -706,31 +695,49 @@
       S.activeDemo = d;
       if (!d.rawVideo?.startsWith('/api')) d.rawVideo = `/api/demo/${id}/video/raw`;
       if (d.editedVideo && !d.editedVideo.startsWith('/api')) d.editedVideo = `/api/demo/${id}/video/edited`;
-      S.activeVideoType = d.editedVideo ? 'edited' : 'raw';
       S.selectedSeg = -1;
+      S.playheadSec = 0;
       await loadEDL(id);
       S.view = 'editor';
       render();
     }
 
-    function switchVideo(type) { S.activeVideoType = type; render(); }
-
     async function exportVideo(demoId) {
       const format = document.getElementById('export-format').value;
-      if (format === 'mp4') {
-        const a = document.createElement('a');
-        a.href = `/api/demo/${demoId}/video/${S.activeVideoType||'edited'}`;
-        a.download = `demo.mp4`;
-        a.click();
-        return;
-      }
       const btn = event.target;
-      btn.disabled = true; btn.textContent = 'Converting...';
+      btn.disabled = true;
+      btn.textContent = 'Exporting...';
       try {
-        const res = await api(`/demo/${demoId}/export`, { method: 'POST', body: { format, source: S.activeVideoType||'edited' }});
-        if (res.downloadUrl) { const a = document.createElement('a'); a.href = res.downloadUrl; a.download = `demo.${format==='gif'?'gif':format.includes('webm')?'webm':'mp4'}`; a.click(); }
-        else if (res.error) alert(res.error);
-      } finally { btn.disabled = false; btn.textContent = '↓ Export'; }
+        // First re-export with current EDL
+        await api(`/demo/${demoId}/re-edit`, { method: 'POST' });
+
+        if (format === 'mp4') {
+          const a = document.createElement('a');
+          a.href = `/api/demo/${demoId}/video/edited`;
+          a.download = 'demo.mp4';
+          a.click();
+        } else {
+          // Convert to other format
+          const res = await api(`/demo/${demoId}/export`, {
+            method: 'POST',
+            body: { format, source: 'edited' },
+          });
+          if (res.downloadUrl) {
+            const ext = format === 'gif' ? 'gif' : format.includes('webm') ? 'webm' : 'mp4';
+            const a = document.createElement('a');
+            a.href = res.downloadUrl;
+            a.download = `demo.${ext}`;
+            a.click();
+          } else if (res.error) {
+            alert(res.error);
+          }
+        }
+      } catch (err) {
+        alert('Export failed');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '↓ Export';
+      }
     }
 
     async function saveSettings() {
