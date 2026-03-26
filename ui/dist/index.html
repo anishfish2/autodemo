@@ -521,7 +521,8 @@
 
     // ── Canvas Preview Engine ──
     let _playing = false;
-    let _prevFrameCanvas = null; // For motion blur — offscreen canvas
+    let _blurFrames = []; // Ring buffer of recent frames for motion blur
+    const BLUR_FRAME_COUNT = 5;
     let _rafId = null;
 
     function initPreview() {
@@ -648,29 +649,33 @@
       sx = Math.max(0, Math.min(sx, vw - cropW));
       sy = Math.max(0, Math.min(sy, vh - cropH));
 
-      // Motion blur: draw previous frame first at partial opacity, then current on top
-      if (S.motionBlur && _prevFrameCanvas) {
-        // Layer 1: previous frame (ghost trail)
-        ctx.globalAlpha = 0.45;
-        ctx.drawImage(_prevFrameCanvas, 0, 0);
-        // Layer 2: current frame on top
-        ctx.globalAlpha = 0.7;
-        ctx.drawImage(video, sx, sy, cropW, cropH, 0, 0, vw, vh);
+      // Draw current frame
+      ctx.drawImage(video, sx, sy, cropW, cropH, 0, 0, vw, vh);
+
+      // Motion blur: composite older frames on top with decay
+      if (S.motionBlur && _blurFrames.length > 0) {
+        for (let i = 0; i < _blurFrames.length; i++) {
+          // Older frames get more transparent
+          ctx.globalAlpha = 0.2 * (1 - i / _blurFrames.length);
+          ctx.drawImage(_blurFrames[i], 0, 0);
+        }
         ctx.globalAlpha = 1.0;
-      } else {
-        ctx.drawImage(video, sx, sy, cropW, cropH, 0, 0, vw, vh);
       }
 
-      // Save current frame for next motion blur pass (GPU-accelerated copy)
+      // Store frame for motion blur (only save if frame actually changed)
       if (S.motionBlur) {
-        if (!_prevFrameCanvas) {
-          _prevFrameCanvas = document.createElement('canvas');
+        const lastTime = _blurFrames.length > 0 ? _blurFrames[_blurFrames.length - 1]._time : -1;
+        if (Math.abs(t - lastTime) > 0.02) { // Frame changed (>20ms apart)
+          const fc = document.createElement('canvas');
+          fc.width = vw;
+          fc.height = vh;
+          fc.getContext('2d').drawImage(canvas, 0, 0);
+          fc._time = t;
+          _blurFrames.push(fc);
+          if (_blurFrames.length > BLUR_FRAME_COUNT) _blurFrames.shift();
         }
-        _prevFrameCanvas.width = vw;
-        _prevFrameCanvas.height = vh;
-        _prevFrameCanvas.getContext('2d').drawImage(canvas, 0, 0);
       } else {
-        _prevFrameCanvas = null;
+        _blurFrames = [];
       }
     }
 
