@@ -283,7 +283,9 @@ async function handleRequest(
   const edlMatch = path.match(/^\/api\/demo\/([^/]+)\/edl$/);
   if (edlMatch && method === "GET") {
     const id = edlMatch[1];
-    const logPath = join(TRACES_DIR, id, "action-log.json");
+    const demo = demos.get(id);
+    const traceDir = demo?.traceDir || join(TRACES_DIR, id);
+    const logPath = join(traceDir, "action-log.json");
     if (existsSync(logPath)) {
       sendJson(res, JSON.parse(readFileSync(logPath, "utf-8")));
     } else {
@@ -375,7 +377,8 @@ async function handleRequest(
   const reEditMatch = path.match(/^\/api\/demo\/([^/]+)\/re-edit$/);
   if (reEditMatch && method === "POST") {
     const id = reEditMatch[1];
-    const traceDir = join(TRACES_DIR, id);
+    const demo = demos.get(id);
+    const traceDir = demo?.traceDir || join(TRACES_DIR, id);
     const rawVideo = join(traceDir, "recording.mp4");
     const actionLogPath = join(traceDir, "action-log.json");
     const editedPath = join(traceDir, "edited.mp4");
