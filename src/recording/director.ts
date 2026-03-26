@@ -38,9 +38,10 @@ export async function runDirector(options: {
     (e) => e.type === "action" && e.action !== "screenshot" && e.action !== "wait",
   );
 
-  // Sample up to 8 screenshots to keep tokens reasonable
-  const step = Math.max(1, Math.floor(actionEntries.length / 8));
-  const sampled = actionEntries.filter((_, i) => i % step === 0).slice(0, 8);
+  // Send up to 15 screenshots so the director sees all important moments
+  const maxSamples = 15;
+  const step = Math.max(1, Math.floor(actionEntries.length / maxSamples));
+  const sampled = actionEntries.filter((_, i) => i % step === 0).slice(0, maxSamples);
 
   // Find matching screenshot files
   const ssFiles = existsSync(ssDir) ? readdirSync(ssDir).sort() : [];
@@ -97,11 +98,10 @@ Based on these screenshots, return a JSON array of zoom regions. Each region:
 - reason: brief description of why this moment deserves a zoom
 
 Rules:
-- Only zoom on 3-5 key moments, not everything
-- Zoom on: form interactions, button clicks, important UI elements appearing, key content being revealed
-- Don't zoom on: page loads, idle moments, navigation that doesn't show anything new
+- Zoom on every moment that matters: form interactions, button clicks, important UI elements appearing, key content being revealed, text being typed, meaningful state changes
+- Don't zoom on: page loads with no visible change, idle/waiting moments, repeated similar actions
 - Each zoom should last 1-3 seconds
-- Zoom level 2.0 is standard, use higher for small UI elements
+- Zoom level 2.0 is standard, use higher (2.5-3.0) for small UI elements like buttons or input fields
 
 Respond with ONLY the JSON array, no markdown fences.`,
   });
