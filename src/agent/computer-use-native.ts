@@ -550,7 +550,20 @@ export async function runNativeComputerUseAgent(
     ffmpegProcess.stdin?.write("q");
     ffmpegProcess.stdin?.end();
     await new Promise((r) => setTimeout(r, 2000));
-    console.log(`\nRaw video: ${videoPath}`);
+
+    // Re-encode with keyframe every frame for frame-accurate seeking in the editor
+    const seekablePath = videoPath.replace(".mp4", "-seekable.mp4");
+    console.log("Re-encoding for frame-accurate seeking...");
+    try {
+      execSync(
+        `ffmpeg -y -i "${videoPath}" -c:v libx264 -preset fast -crf 18 -g 1 -keyint_min 1 -pix_fmt yuv420p -an "${seekablePath}" 2>/dev/null`,
+      );
+      // Replace original with seekable version
+      execSync(`mv "${seekablePath}" "${videoPath}"`);
+    } catch {
+      console.log("  Re-encode failed — seeking may be limited");
+    }
+    console.log(`Raw video: ${videoPath}`);
 
     // Auto-edit: compress thinking time, keep actions at normal speed
     const editedPath = join(traceDir, "edited.mp4");
