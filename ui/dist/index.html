@@ -307,7 +307,7 @@
         case 'editor': root.innerHTML = renderEditor(); break;
         case 'settings': root.innerHTML = renderSettings(); break;
       }
-      if (S.view === 'editor') { initTimeline(); initZoomTrack(); }
+      if (S.view === 'editor') { initTimeline(); initZoomTrack(); initPreview(); }
     }
 
     function renderDashboard() {
@@ -365,7 +365,8 @@
         </div>
         <div class="editor-layout">
           <div class="card" style="padding:0;overflow:hidden;border-radius:10px;position:relative">
-            <video id="vp" src="${src}" preload="metadata" muted playsinline></video>
+            <video id="vp" src="${src}" preload="metadata" muted playsinline style="display:none"></video>
+            <canvas id="preview" style="width:100%;display:block;background:#000;border-radius:10px"></canvas>
             <div id="vp-overlay" style="position:absolute;bottom:0;left:0;right:0;padding:8px 12px;display:flex;align-items:center;gap:12px;background:linear-gradient(transparent,rgba(0,0,0,0.7))">
               <button id="vp-play" class="btn btn-sm" style="background:rgba(255,255,255,0.15);color:#fff;padding:6px 12px" onclick="togglePlay()">▶</button>
               <span id="vp-time" style="font-size:12px;color:#ccc;font-family:'SF Mono',monospace">0:00.0</span>
@@ -500,6 +501,128 @@
       _tlCanvas.width = Math.ceil(totalW * _tlPPS);
     }
 
+    // ── Canvas Preview Engine ──
+    let _playing = false;
+    let _prevFrameData = null; // For motion blur
+    let _rafId = null;
+
+    function initPreview() {
+      const video = document.getElementById('vp');
+      const canvas = document.getElementById('preview');
+      if (!video || !canvas) return;
+
+      video.addEventListener('loadedmetadata', () => {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        renderPreviewFrame();
+      });
+
+      // When video seeks (from playhead drag), render the frame
+      video.addEventListener('seeked', () => {
+        renderPreviewFrame();
+      });
+    }
+
+    function renderPreviewFrame() {
+      const video = document.getElementById('vp');
+      const canvas = document.getElementById('preview');
+      if (!video || !canvas || video.readyState < 2) return;
+      const ctx = canvas.getContext('2d');
+      const vw = video.videoWidth;
+      const vh = video.videoHeight;
+      if (!vw || !vh) return;
+
+      // Ensure canvas size matches
+      if (canvas.width !== vw) canvas.width = vw;
+      if (canvas.height !== vh) canvas.height = vh;
+
+      const t = video.currentTime;
+
+      // Check if current time falls within a zoom region
+      let activeZoom = null;
+      for (const zr of S.zoomRegions) {
+        if (t >= zr.startSec && t <= zr.endSec) {
+          activeZoom = zr;
+          break;
+        }
+      }
+
+      if (activeZoom) {
+        // Zoom: crop a region centered on (cx, cy) and scale it up
+        const z = activeZoom.zoomLevel;
+        // cx, cy are in the 1024x768 coordinate space the agent used
+        // Scale to video pixels
+        const scaleX = vw / 1024;
+        const scaleY = vh / 768;
+        const centerX = activeZoom.cx * scaleX;
+        const centerY = activeZoom.cy * scaleY;
+
+        const cropW = vw / z;
+        const cropH = vh / z;
+        let sx = centerX - cropW / 2;
+        let sy = centerY - cropH / 2;
+        // Clamp to video bounds
+        sx = Math.max(0, Math.min(sx, vw - cropW));
+        sy = Math.max(0, Math.min(sy, vh - cropH));
+
+        // Smooth zoom transition at edges (ease in/out over 0.3s)
+        const fadeIn = Math.min(1, (t - activeZoom.startSec) / 0.3);
+        const fadeOut = Math.min(1, (activeZoom.endSec - t) / 0.3);
+        const ease = Math.min(fadeIn, fadeOut);
+        const effectiveZ = 1 + (z - 1) * ease;
+
+        const eCropW = vw / effectiveZ;
+        const eCropH = vh / effectiveZ;
+        let eSx = centerX - eCropW / 2;
+        let eSy = centerY - eCropH / 2;
+        eSx = Math.max(0, Math.min(eSx, vw - eCropW));
+        eSy = Math.max(0, Math.min(eSy, vh - eCropH));
+
+        ctx.drawImage(video, eSx, eSy, eCropW, eCropH, 0, 0, vw, vh);
+      } else {
+        // No zoom — draw full frame
+        ctx.drawImage(video, 0, 0, vw, vh);
+      }
+
+      // Motion blur: blend with previous frame
+      if (S.motionBlur && _prevFrameData) {
+        const imgData = ctx.getImageData(0, 0, vw, vh);
+        const curr = imgData.data;
+        const prev = _prevFrameData;
+        // Blend: 70% current + 30% previous
+        for (let i = 0; i < curr.length; i += 4) {
+          curr[i] = curr[i] * 0.7 + prev[i] * 0.3;
+          curr[i+1] = curr[i+1] * 0.7 + prev[i+1] * 0.3;
+          curr[i+2] = curr[i+2] * 0.7 + prev[i+2] * 0.3;
+        }
+        ctx.putImageData(imgData, 0, 0);
+      }
+
+      // Save current frame for motion blur
+      if (S.motionBlur) {
+        _prevFrameData = ctx.getImageData(0, 0, vw, vh).data;
+      }
+    }
+
+    // Animation loop for playback
+    function startRenderLoop() {
+      function tick() {
+        if (!_playing) return;
+        renderPreviewFrame();
+        // Update playhead
+        const v = document.getElementById('vp');
+        if (v) {
+          S.playheadSec = v.currentTime;
+          const t = document.getElementById('vp-time');
+          if (t) t.textContent = fmtTime(v.currentTime);
+          drawTimeline();
+          updateTimeDisplay();
+        }
+        _rafId = requestAnimationFrame(tick);
+      }
+      _rafId = requestAnimationFrame(tick);
+    }
+
     function seekVideo(timeSec) {
       const v = document.getElementById('vp');
       if (!v) return;
@@ -510,9 +633,10 @@
       const btn = document.getElementById('vp-play');
       if (btn) btn.textContent = '▶';
       _playing = false;
+      if (_rafId) { cancelAnimationFrame(_rafId); _rafId = null; }
+      // Frame will render via 'seeked' event
     }
 
-    let _playing = false;
     function togglePlay() {
       const v = document.getElementById('vp');
       if (!v) return;
@@ -520,11 +644,14 @@
       if (_playing) {
         v.pause();
         _playing = false;
+        if (_rafId) { cancelAnimationFrame(_rafId); _rafId = null; }
         if (btn) btn.textContent = '▶';
+        renderPreviewFrame(); // Show clean frame
       } else {
         v.play();
         _playing = true;
         if (btn) btn.textContent = '⏸';
+        startRenderLoop();
       }
     }
 
@@ -651,16 +778,16 @@
       // Sync playhead when video is playing
       const v0 = document.getElementById('vp');
       if (v0) {
+        // ontimeupdate only needed when not in render loop (scrubbing)
         v0.ontimeupdate = () => {
-          if (_dragging) return;
+          if (_dragging || _playing) return;
           S.playheadSec = v0.currentTime;
-          const t = document.getElementById('vp-time');
-          if (t) t.textContent = fmtTime(v0.currentTime);
           drawTimeline();
           updateTimeDisplay();
         };
         v0.onended = () => {
           _playing = false;
+          if (_rafId) { cancelAnimationFrame(_rafId); _rafId = null; }
           const btn = document.getElementById('vp-play');
           if (btn) btn.textContent = '▶';
         };
