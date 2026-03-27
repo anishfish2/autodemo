@@ -717,11 +717,11 @@
       const hasMotion = S.motionBlur && (panSpeed > 0.5 || Math.abs(velZ) > 0.005);
 
       if (hasMotion) {
-        const blurAmount = 20;
+        const blurAmount = 40;
         const spreadX = velX * blurAmount;
         const spreadY = velY * blurAmount;
         const spreadZ = velZ * blurAmount;
-        const samples = 14;
+        const samples = 18;
 
         // Draw sharp frame first at full brightness
         ctx.drawImage(video, sx, sy, cropW, cropH, 0, 0, vw, vh);
@@ -742,7 +742,7 @@
           sSx = Math.max(0, Math.min(sSx, vw - sCropW));
           sSy = Math.max(0, Math.min(sSy, vh - sCropH));
 
-          ctx.globalAlpha = 0.35 * (1 - Math.abs(frac) * 1.2);
+          ctx.globalAlpha = 0.5 * (1 - Math.abs(frac));
           ctx.drawImage(video, sSx, sSy, sCropW, sCropH, 0, 0, vw, vh);
         }
         ctx.globalAlpha = 1.0;
