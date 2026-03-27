@@ -708,32 +708,38 @@
       sx = Math.max(0, Math.min(sx, vw - cropW));
       sy = Math.max(0, Math.min(sy, vh - cropH));
 
-      // Directional motion blur — simulates a camera shutter open during motion
-      // by accumulating the frame at multiple crop positions along the motion path
+      // Directional motion blur — exaggerate the camera velocity to create
+      // visible smear. The single-frame delta is tiny, so we amplify it.
       const velX = panX - _prevPanX;
       const velY = panY - _prevPanY;
       const velZ = effectiveZ - _prevZoom;
       const panSpeed = Math.sqrt(velX * velX + velY * velY);
-      const zoomSpeed = Math.abs(velZ);
-      const hasMotion = S.motionBlur && (panSpeed > 2 || zoomSpeed > 0.01);
+      const hasMotion = S.motionBlur && (panSpeed > 0.5 || Math.abs(velZ) > 0.005);
 
       if (hasMotion) {
-        // Number of sub-frame samples — more samples = smoother blur
-        const samples = Math.min(16, Math.max(6, Math.round(panSpeed * 2 + zoomSpeed * 100)));
+        // Amplify the motion — spread samples over a much wider range
+        // than the single-frame delta to create visible blur
+        const blurAmount = 8; // How many frames worth of motion to spread over
+        const spreadX = velX * blurAmount;
+        const spreadY = velY * blurAmount;
+        const spreadZ = velZ * blurAmount;
+
+        const samples = 12;
         const alpha = 1.0 / samples;
 
         ctx.clearRect(0, 0, vw, vh);
 
         for (let i = 0; i < samples; i++) {
-          const frac = i / (samples - 1); // 0 = previous position, 1 = current position
+          // Spread from -0.5 to +0.5 around the current position
+          // (centered on current, not trailing behind)
+          const frac = (i / (samples - 1)) - 0.5;
 
-          // Interpolate crop position between previous and current
-          const samplePanX = _prevPanX + velX * frac;
-          const samplePanY = _prevPanY + velY * frac;
-          const sampleZ = _prevZoom + velZ * frac;
+          const samplePanX = panX + spreadX * frac;
+          const samplePanY = panY + spreadY * frac;
+          const sampleZ = Math.max(1, effectiveZ + spreadZ * frac);
 
-          const sCropW = vw / Math.max(sampleZ, 1.001);
-          const sCropH = vh / Math.max(sampleZ, 1.001);
+          const sCropW = vw / sampleZ;
+          const sCropH = vh / sampleZ;
           let sSx = samplePanX - sCropW / 2;
           let sSy = samplePanY - sCropH / 2;
           sSx = Math.max(0, Math.min(sSx, vw - sCropW));
