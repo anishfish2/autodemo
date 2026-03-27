@@ -653,33 +653,28 @@
       let weightedY = 0;
 
       for (const zr of sorted) {
-        let w = 0; // weight for this region: 0 = no influence, 1 = full influence
+        let w = 0;
 
-        if (t >= zr.startSec && t <= zr.endSec) {
-          // Inside the region
-          const dur = zr.endSec - zr.startSec;
-          const fadeIn = Math.min(FADE, dur * 0.3);
-          const fadeOut = Math.min(FADE, dur * 0.3);
+        // Fade starts BEFORE the region and ends AFTER it
+        // Region influence: [startSec - FADE ... startSec ... endSec ... endSec + FADE]
+        const fadeStart = zr.startSec - FADE;
+        const fadeEnd = zr.endSec + FADE;
 
-          if (t < zr.startSec + fadeIn) {
-            w = (t - zr.startSec) / fadeIn;
-          } else if (t > zr.endSec - fadeOut) {
-            w = (zr.endSec - t) / fadeOut;
-          } else {
-            w = 1;
-          }
-          // Smooth the linear ramp
-          w = 0.5 - 0.5 * Math.cos(Math.PI * w);
-        } else if (t < zr.startSec && zr.startSec - t < FADE) {
-          // Approaching this region — start fading in early
-          w = 1 - (zr.startSec - t) / FADE;
-          w = 0.5 - 0.5 * Math.cos(Math.PI * w);
-          w *= 0.3; // Subtle anticipation
-        } else if (t > zr.endSec && t - zr.endSec < FADE) {
-          // Just left this region — fade out
+        if (t < fadeStart || t > fadeEnd) {
+          w = 0; // Outside influence range
+        } else if (t < zr.startSec) {
+          // Fading in (before region starts)
+          w = (t - fadeStart) / FADE;
+        } else if (t > zr.endSec) {
+          // Fading out (after region ends)
           w = 1 - (t - zr.endSec) / FADE;
-          w = 0.5 - 0.5 * Math.cos(Math.PI * w);
+        } else {
+          // Fully inside
+          w = 1;
         }
+
+        // Cosine smooth the ramp
+        if (w > 0 && w < 1) w = 0.5 - 0.5 * Math.cos(Math.PI * w);
 
         if (w > 0.001) {
           const cx = zr.cx * scaleX;
