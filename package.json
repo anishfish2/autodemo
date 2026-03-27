@@ -1,6 +1,6 @@
 {
   "name": "@anishfish/autodemo",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Automated demo video generation — point at a website or codebase and get a polished product demo video",
   "type": "module",
   "bin": {
@@ -44,12 +44,12 @@
     "nanoid": "^5.1.0",
     "pino": "^10.3.1",
     "pino-pretty": "^13.0.0",
-    "playwright": "^1.50.0",
     "ws": "^8.20.0",
     "yaml": "^2.8.0",
     "zod": "^3.24.0"
   },
   "devDependencies": {
+    "playwright": "^1.50.0",
     "@types/node": "^22.0.0",
     "@types/ws": "^8.18.1",
     "tsx": "^4.21.0",
