@@ -717,22 +717,19 @@
       const hasMotion = S.motionBlur && (panSpeed > 0.5 || Math.abs(velZ) > 0.005);
 
       if (hasMotion) {
-        // Amplify the motion — spread samples over a much wider range
-        // than the single-frame delta to create visible blur
-        const blurAmount = 8; // How many frames worth of motion to spread over
+        const blurAmount = 8;
         const spreadX = velX * blurAmount;
         const spreadY = velY * blurAmount;
         const spreadZ = velZ * blurAmount;
+        const samples = 10;
 
-        const samples = 12;
-        const alpha = 1.0 / samples;
+        // Draw sharp frame first at full brightness
+        ctx.drawImage(video, sx, sy, cropW, cropH, 0, 0, vw, vh);
 
-        ctx.clearRect(0, 0, vw, vh);
-
+        // Overlay blurred samples on top at low opacity
         for (let i = 0; i < samples; i++) {
-          // Spread from -0.5 to +0.5 around the current position
-          // (centered on current, not trailing behind)
           const frac = (i / (samples - 1)) - 0.5;
+          if (Math.abs(frac) < 0.05) continue; // Skip center (already drawn sharp)
 
           const samplePanX = panX + spreadX * frac;
           const samplePanY = panY + spreadY * frac;
@@ -745,7 +742,8 @@
           sSx = Math.max(0, Math.min(sSx, vw - sCropW));
           sSy = Math.max(0, Math.min(sSy, vh - sCropH));
 
-          ctx.globalAlpha = alpha;
+          // Outer samples are more transparent
+          ctx.globalAlpha = 0.15 * (1 - Math.abs(frac) * 1.5);
           ctx.drawImage(video, sSx, sSy, sCropW, sCropH, 0, 0, vw, vh);
         }
         ctx.globalAlpha = 1.0;
