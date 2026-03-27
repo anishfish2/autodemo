@@ -196,7 +196,7 @@
           regions.push({
             startSec: Math.max(0, t - 0.3),
             endSec: t + 1.5,
-            zoomLevel: 2.0,
+            zoomLevel: 1.5,
             cx: e.coords[0],
             cy: e.coords[1],
             auto: true,
@@ -603,7 +603,7 @@
         const newZoom = {
           startSec: Math.max(0, t - 0.5),
           endSec: t + 2.5,
-          zoomLevel: 2.0,
+          zoomLevel: 1.5,
           cx,
           cy,
           auto: false,
@@ -638,65 +638,93 @@
 
       const scaleX = vw / 1024;
       const scaleY = vh / 768;
-      const RAMP = 1.5;
 
-      function quinticEase(raw) {
-        return raw < 0.5 ? 16*raw*raw*raw*raw*raw : 1 - Math.pow(-2*raw+2, 5)/2;
+      // Smooth easing function
+      function smoothEase(x) {
+        // Attempt a very gentle S-curve (sine-based, smoother than quintic)
+        return x < 0 ? 0 : x > 1 ? 1 : 0.5 - 0.5 * Math.cos(Math.PI * x);
       }
 
-      // Find current zoom region and neighbors for smooth transitions
-      let effectiveZ = 1;
-      let panX = vw / 2;
-      let panY = vh / 2;
+      // ── Continuous camera model ──
+      // Instead of per-region logic, compute a target zoom/pan for the
+      // current time, then smoothly interpolate from the previous state.
+      // This naturally handles successive zooms — the camera just pans
+      // between targets without zooming out first.
+
       const sorted = [...S.zoomRegions].sort((a, b) => a.startSec - b.startSec);
+      const EASE_TIME = 1.2; // seconds to ease between any two camera states
 
-      for (let zi = 0; zi < sorted.length; zi++) {
-        const zr = sorted[zi];
-        const prev = zi > 0 ? sorted[zi - 1] : null;
-        const next = zi < sorted.length - 1 ? sorted[zi + 1] : null;
-        const targetCX = zr.cx * scaleX;
-        const targetCY = zr.cy * scaleY;
+      // Find the target state at time t
+      let targetZ = 1;
+      let targetCX = vw / 2;
+      let targetCY = vh / 2;
 
-        if (t >= zr.startSec && t <= zr.endSec) {
-          const duration = zr.endSec - zr.startSec;
+      // Check if we're inside a zoom region
+      let insideZoom = null;
+      for (const zr of sorted) {
+        if (t >= zr.startSec && t <= zr.endSec) { insideZoom = zr; break; }
+      }
 
-          // Check if previous zoom is close enough to crossfade from
-          const prevClose = prev && (zr.startSec - prev.endSec) < RAMP * 2;
-          // Check if next zoom is close enough to crossfade to
-          const nextClose = next && (next.startSec - zr.endSec) < RAMP * 2;
+      if (insideZoom) {
+        targetZ = insideZoom.zoomLevel;
+        targetCX = insideZoom.cx * scaleX;
+        targetCY = insideZoom.cy * scaleY;
+      }
 
-          const rampIn = prevClose ? 0 : Math.min(RAMP, duration * 0.4);
-          const rampOut = nextClose ? 0 : Math.min(RAMP, duration * 0.4);
-
-          let progress;
-          if (rampIn > 0 && t < zr.startSec + rampIn) {
-            progress = quinticEase((t - zr.startSec) / rampIn);
-          } else if (rampOut > 0 && t > zr.endSec - rampOut) {
-            progress = quinticEase((zr.endSec - t) / rampOut);
-          } else {
-            progress = 1;
-          }
-
-          effectiveZ = 1 + (zr.zoomLevel - 1) * progress;
-          panX = vw / 2 + (targetCX - vw / 2) * progress;
-          panY = vh / 2 + (targetCY - vh / 2) * progress;
-          break;
-        }
-
-        // Between two zoom regions — crossfade pan/zoom from one to the next
-        if (next && t > zr.endSec && t < next.startSec) {
-          const gap = next.startSec - zr.endSec;
-          if (gap < RAMP * 2) {
-            // Smooth transition between zooms
-            const raw = (t - zr.endSec) / gap;
-            const ease = quinticEase(raw);
-            const fromCX = zr.cx * scaleX, fromCY = zr.cy * scaleY;
-            const toCX = next.cx * scaleX, toCY = next.cy * scaleY;
-            effectiveZ = zr.zoomLevel + (next.zoomLevel - zr.zoomLevel) * ease;
-            panX = fromCX + (toCX - fromCX) * ease;
-            panY = fromCY + (toCY - fromCY) * ease;
+      // Check if we're in a gap between two close zoom regions — pan between them
+      if (!insideZoom) {
+        for (let i = 0; i < sorted.length - 1; i++) {
+          const a = sorted[i], b = sorted[i + 1];
+          if (t > a.endSec && t < b.startSec) {
+            const gap = b.startSec - a.endSec;
+            if (gap < 5) { // Close enough to stay zoomed and pan
+              const frac = smoothEase((t - a.endSec) / gap);
+              targetZ = a.zoomLevel + (b.zoomLevel - a.zoomLevel) * frac;
+              targetCX = a.cx * scaleX + (b.cx * scaleX - a.cx * scaleX) * frac;
+              targetCY = a.cy * scaleY + (b.cy * scaleY - a.cy * scaleY) * frac;
+            }
             break;
           }
+        }
+      }
+
+      // Compute ease-in from default state (zoom=1, center) to target
+      // and ease-out back to default when leaving a zoom region
+      let effectiveZ = targetZ;
+      let panX = targetCX;
+      let panY = targetCY;
+
+      if (targetZ > 1) {
+        // Find how long we've been in the "zoomed" state
+        // Look backward to find when we entered zoom territory
+        let zoomStartTime = t;
+        for (const zr of sorted) {
+          if (zr.endSec < t - 5) continue; // Too far back
+          if (zr.startSec <= t) { zoomStartTime = Math.min(zoomStartTime, zr.startSec); break; }
+        }
+        const timeInZoom = t - zoomStartTime;
+        const easeIn = smoothEase(Math.min(1, timeInZoom / EASE_TIME));
+        effectiveZ = 1 + (targetZ - 1) * easeIn;
+        panX = vw / 2 + (targetCX - vw / 2) * easeIn;
+        panY = vh / 2 + (targetCY - vh / 2) * easeIn;
+      } else {
+        // Not in any zoom — check if we recently left one (ease out)
+        let lastZoomEnd = -999;
+        let lastZoom = null;
+        for (const zr of sorted) {
+          if (zr.endSec <= t && zr.endSec > lastZoomEnd) {
+            lastZoomEnd = zr.endSec;
+            lastZoom = zr;
+          }
+        }
+        if (lastZoom && (t - lastZoomEnd) < EASE_TIME) {
+          const easeOut = smoothEase((t - lastZoomEnd) / EASE_TIME);
+          const fromZ = lastZoom.zoomLevel;
+          const fromCX = lastZoom.cx * scaleX;
+          const fromCY = lastZoom.cy * scaleY;
+          effectiveZ = fromZ + (1 - fromZ) * easeOut;
+          panX = fromCX + (vw / 2 - fromCX) * easeOut;
+          panY = fromCY + (vh / 2 - fromCY) * easeOut;
         }
       }
 

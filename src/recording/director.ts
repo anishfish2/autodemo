@@ -101,7 +101,7 @@ Rules:
 - Zoom on every moment that matters: form interactions, button clicks, important UI elements appearing, key content being revealed, text being typed, meaningful state changes
 - Don't zoom on: page loads with no visible change, idle/waiting moments, repeated similar actions
 - Each zoom should last 1-3 seconds
-- Zoom level 2.0 is standard, use higher (2.5-3.0) for small UI elements like buttons or input fields
+- Zoom level 1.5 is standard (subtle, cinematic). Use 1.8-2.0 only for very small UI elements. Never exceed 2.5
 
 Respond with ONLY the JSON array, no markdown fences.`,
   });
