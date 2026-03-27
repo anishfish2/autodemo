@@ -1,10 +1,10 @@
 {
-  "name": "demoo",
+  "name": "autodemo",
   "version": "0.1.0",
   "description": "Automated demo video generation — point at a website or codebase and get a polished product demo video",
   "type": "module",
   "bin": {
-    "demoo": "./dist/bin/demoo.js"
+    "autodemo": "./dist/bin/demoo.js"
   },
   "files": [
     "dist/**/*",
