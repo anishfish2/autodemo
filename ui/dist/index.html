@@ -708,43 +708,45 @@
       sx = Math.max(0, Math.min(sx, vw - cropW));
       sy = Math.max(0, Math.min(sy, vh - cropH));
 
-      // Directional motion blur based on camera pan/zoom velocity
-      if (S.motionBlur && effectiveZ > 1.01) {
-        // Compute velocity of the crop window
-        const velX = (panX - _prevPanX) * effectiveZ;
-        const velY = (panY - _prevPanY) * effectiveZ;
-        const velZ = (effectiveZ - _prevZoom) * 200;
-        const speed = Math.sqrt(velX * velX + velY * velY + velZ * velZ);
+      // Directional motion blur — simulates a camera shutter open during motion
+      // by accumulating the frame at multiple crop positions along the motion path
+      const velX = panX - _prevPanX;
+      const velY = panY - _prevPanY;
+      const velZ = effectiveZ - _prevZoom;
+      const panSpeed = Math.sqrt(velX * velX + velY * velY);
+      const zoomSpeed = Math.abs(velZ);
+      const hasMotion = S.motionBlur && (panSpeed > 2 || zoomSpeed > 0.01);
 
-        if (speed > 5) {
-          // Draw multiple offset copies in the direction of motion for directional blur
-          const blurSamples = Math.min(12, Math.round(speed / 8));
-          const blurStrength = Math.min(30, speed * 0.3); // Max pixel offset
+      if (hasMotion) {
+        // Number of sub-frame samples — more samples = smoother blur
+        const samples = Math.min(16, Math.max(6, Math.round(panSpeed * 2 + zoomSpeed * 100)));
+        const alpha = 1.0 / samples;
 
-          // Normalize direction
-          const dirX = velX / (speed || 1);
-          const dirY = velY / (speed || 1);
+        ctx.clearRect(0, 0, vw, vh);
 
-          // Draw the blurred samples first (underneath)
-          for (let i = blurSamples; i >= 1; i--) {
-            const frac = i / blurSamples;
-            const offsetX = -dirX * blurStrength * frac;
-            const offsetY = -dirY * blurStrength * frac;
-            ctx.globalAlpha = 0.06 * (1 - frac * 0.5);
-            ctx.drawImage(video, sx, sy, cropW, cropH, offsetX, offsetY, vw, vh);
-          }
+        for (let i = 0; i < samples; i++) {
+          const frac = i / (samples - 1); // 0 = previous position, 1 = current position
 
-          // Draw the sharp current frame on top
-          ctx.globalAlpha = 1.0;
-          ctx.drawImage(video, sx, sy, cropW, cropH, 0, 0, vw, vh);
-        } else {
-          ctx.drawImage(video, sx, sy, cropW, cropH, 0, 0, vw, vh);
+          // Interpolate crop position between previous and current
+          const samplePanX = _prevPanX + velX * frac;
+          const samplePanY = _prevPanY + velY * frac;
+          const sampleZ = _prevZoom + velZ * frac;
+
+          const sCropW = vw / Math.max(sampleZ, 1.001);
+          const sCropH = vh / Math.max(sampleZ, 1.001);
+          let sSx = samplePanX - sCropW / 2;
+          let sSy = samplePanY - sCropH / 2;
+          sSx = Math.max(0, Math.min(sSx, vw - sCropW));
+          sSy = Math.max(0, Math.min(sSy, vh - sCropH));
+
+          ctx.globalAlpha = alpha;
+          ctx.drawImage(video, sSx, sSy, sCropW, sCropH, 0, 0, vw, vh);
         }
+        ctx.globalAlpha = 1.0;
       } else {
         ctx.drawImage(video, sx, sy, cropW, cropH, 0, 0, vw, vh);
       }
 
-      // Track for next frame's velocity calculation
       _prevPanX = panX;
       _prevPanY = panY;
       _prevZoom = effectiveZ;
