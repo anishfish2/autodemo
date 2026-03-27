@@ -639,93 +639,71 @@
       const scaleX = vw / 1024;
       const scaleY = vh / 768;
 
-      // Smooth easing function
-      function smoothEase(x) {
-        // Attempt a very gentle S-curve (sine-based, smoother than quintic)
-        return x < 0 ? 0 : x > 1 ? 1 : 0.5 - 0.5 * Math.cos(Math.PI * x);
-      }
-
-      // ── Continuous camera model ──
-      // Instead of per-region logic, compute a target zoom/pan for the
-      // current time, then smoothly interpolate from the previous state.
-      // This naturally handles successive zooms — the camera just pans
-      // between targets without zooming out first.
+      // ── Simple zoom model ──
+      // For each zoom region, compute a weight (0-1) based on proximity.
+      // Blend all active/nearby regions. Camera never "jumps".
 
       const sorted = [...S.zoomRegions].sort((a, b) => a.startSec - b.startSec);
-      const EASE_TIME = 1.2; // seconds to ease between any two camera states
+      const FADE = 0.8; // seconds to fade in/out each region
 
-      // Find the target state at time t
-      let targetZ = 1;
-      let targetCX = vw / 2;
-      let targetCY = vh / 2;
+      // Accumulate weighted zoom target from all regions
+      let totalWeight = 0;
+      let weightedZ = 0;
+      let weightedX = 0;
+      let weightedY = 0;
 
-      // Check if we're inside a zoom region
-      let insideZoom = null;
       for (const zr of sorted) {
-        if (t >= zr.startSec && t <= zr.endSec) { insideZoom = zr; break; }
-      }
+        let w = 0; // weight for this region: 0 = no influence, 1 = full influence
 
-      if (insideZoom) {
-        targetZ = insideZoom.zoomLevel;
-        targetCX = insideZoom.cx * scaleX;
-        targetCY = insideZoom.cy * scaleY;
-      }
+        if (t >= zr.startSec && t <= zr.endSec) {
+          // Inside the region
+          const dur = zr.endSec - zr.startSec;
+          const fadeIn = Math.min(FADE, dur * 0.3);
+          const fadeOut = Math.min(FADE, dur * 0.3);
 
-      // Check if we're in a gap between two close zoom regions — pan between them
-      if (!insideZoom) {
-        for (let i = 0; i < sorted.length - 1; i++) {
-          const a = sorted[i], b = sorted[i + 1];
-          if (t > a.endSec && t < b.startSec) {
-            const gap = b.startSec - a.endSec;
-            if (gap < 5) { // Close enough to stay zoomed and pan
-              const frac = smoothEase((t - a.endSec) / gap);
-              targetZ = a.zoomLevel + (b.zoomLevel - a.zoomLevel) * frac;
-              targetCX = a.cx * scaleX + (b.cx * scaleX - a.cx * scaleX) * frac;
-              targetCY = a.cy * scaleY + (b.cy * scaleY - a.cy * scaleY) * frac;
-            }
-            break;
+          if (t < zr.startSec + fadeIn) {
+            w = (t - zr.startSec) / fadeIn;
+          } else if (t > zr.endSec - fadeOut) {
+            w = (zr.endSec - t) / fadeOut;
+          } else {
+            w = 1;
           }
+          // Smooth the linear ramp
+          w = 0.5 - 0.5 * Math.cos(Math.PI * w);
+        } else if (t < zr.startSec && zr.startSec - t < FADE) {
+          // Approaching this region — start fading in early
+          w = 1 - (zr.startSec - t) / FADE;
+          w = 0.5 - 0.5 * Math.cos(Math.PI * w);
+          w *= 0.3; // Subtle anticipation
+        } else if (t > zr.endSec && t - zr.endSec < FADE) {
+          // Just left this region — fade out
+          w = 1 - (t - zr.endSec) / FADE;
+          w = 0.5 - 0.5 * Math.cos(Math.PI * w);
+        }
+
+        if (w > 0.001) {
+          const cx = zr.cx * scaleX;
+          const cy = zr.cy * scaleY;
+          weightedZ += (zr.zoomLevel - 1) * w;
+          weightedX += (cx - vw / 2) * w;
+          weightedY += (cy - vh / 2) * w;
+          totalWeight += w;
         }
       }
 
-      // Compute ease-in from default state (zoom=1, center) to target
-      // and ease-out back to default when leaving a zoom region
-      let effectiveZ = targetZ;
-      let panX = targetCX;
-      let panY = targetCY;
-
-      if (targetZ > 1) {
-        // Find how long we've been in the "zoomed" state
-        // Look backward to find when we entered zoom territory
-        let zoomStartTime = t;
-        for (const zr of sorted) {
-          if (zr.endSec < t - 5) continue; // Too far back
-          if (zr.startSec <= t) { zoomStartTime = Math.min(zoomStartTime, zr.startSec); break; }
-        }
-        const timeInZoom = t - zoomStartTime;
-        const easeIn = smoothEase(Math.min(1, timeInZoom / EASE_TIME));
-        effectiveZ = 1 + (targetZ - 1) * easeIn;
-        panX = vw / 2 + (targetCX - vw / 2) * easeIn;
-        panY = vh / 2 + (targetCY - vh / 2) * easeIn;
+      // Blend: if multiple regions overlap, normalize
+      let effectiveZ, panX, panY;
+      if (totalWeight > 0.001) {
+        // Clamp total weight to 1 so we don't over-zoom when regions overlap
+        const clampedW = Math.min(totalWeight, 1);
+        const norm = clampedW / totalWeight;
+        effectiveZ = 1 + weightedZ * norm;
+        panX = vw / 2 + weightedX * norm;
+        panY = vh / 2 + weightedY * norm;
       } else {
-        // Not in any zoom — check if we recently left one (ease out)
-        let lastZoomEnd = -999;
-        let lastZoom = null;
-        for (const zr of sorted) {
-          if (zr.endSec <= t && zr.endSec > lastZoomEnd) {
-            lastZoomEnd = zr.endSec;
-            lastZoom = zr;
-          }
-        }
-        if (lastZoom && (t - lastZoomEnd) < EASE_TIME) {
-          const easeOut = smoothEase((t - lastZoomEnd) / EASE_TIME);
-          const fromZ = lastZoom.zoomLevel;
-          const fromCX = lastZoom.cx * scaleX;
-          const fromCY = lastZoom.cy * scaleY;
-          effectiveZ = fromZ + (1 - fromZ) * easeOut;
-          panX = fromCX + (vw / 2 - fromCX) * easeOut;
-          panY = fromCY + (vh / 2 - fromCY) * easeOut;
-        }
+        effectiveZ = 1;
+        panX = vw / 2;
+        panY = vh / 2;
       }
 
       // Apply zoom: crop around (panX, panY) and scale up
