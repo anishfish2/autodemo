@@ -89,18 +89,14 @@ function buildEDL(
   const HOLD_AFTER = 0.8; // seconds to keep after action completes
   const APPROACH_BEFORE = 0.8; // seconds to keep before action starts (captures cursor arc animation)
 
-  // Before first action
-  if (actions[0].startSec > 1) {
-    // Keep first 1 second (page appears), cut the rest
-    segments.push({ startSec: 0, endSec: 1, type: "keep", label: "intro" });
-    if (actions[0].startSec - APPROACH_BEFORE > 1) {
-      segments.push({
-        startSec: 1,
-        endSec: actions[0].startSec - APPROACH_BEFORE,
-        type: "cut",
-        label: "initial thinking",
-      });
-    }
+  // Before first action — cut the startup/blank screen time
+  if (actions[0].startSec - APPROACH_BEFORE > 0.1) {
+    segments.push({
+      startSec: 0,
+      endSec: actions[0].startSec - APPROACH_BEFORE,
+      type: "cut",
+      label: "startup",
+    });
   }
 
   for (let i = 0; i < actions.length; i++) {

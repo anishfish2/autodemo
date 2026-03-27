@@ -561,6 +561,14 @@ export async function runNativeComputerUseAgent(
     console.error(`\n  [Fatal] ${finalMessage}`);
   }
 
+  // Close the Chrome tab that was opened for recording
+  try {
+    execSync(
+      `osascript -e 'tell application "Google Chrome" to close active tab of front window'`,
+      { stdio: "ignore", timeout: 5000 },
+    );
+  } catch {}
+
   // Save action log
   const actionLogPath = join(traceDir, "action-log.json");
   actionLog.save(actionLogPath);
@@ -584,6 +592,14 @@ export async function runNativeComputerUseAgent(
       console.log("  Re-encode failed — seeking may be limited");
     }
     console.log(`Raw video: ${videoPath}`);
+
+    // Extract thumbnail from first meaningful frame (skip first 2 seconds of blank screen)
+    try {
+      const thumbPath = join(traceDir, "thumbnail.jpg");
+      execSync(
+        `ffmpeg -y -ss 3 -i "${videoPath}" -frames:v 1 -q:v 5 "${thumbPath}" 2>/dev/null`,
+      );
+    } catch {}
 
     // Director pass: LLM reviews screenshots and decides zoom regions
     console.log("Running director pass for zoom regions...");

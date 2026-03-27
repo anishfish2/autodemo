@@ -30,7 +30,7 @@
     .progress-fill { height: 100%; background: #4f8ff7; border-radius: 2px; }
     .progress-fill.active { animation: pulse 1.5s ease-in-out infinite; }
     @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
-    .log { background: #0d0d0d; border: 1px solid #222; border-radius: 8px; padding: 12px; max-height: 300px; overflow-y: auto; font-family: 'SF Mono', monospace; font-size: 12px; line-height: 1.6; }
+    .log { background: #0d0d0d; border: 1px solid #222; border-radius: 8px; padding: 12px; max-height: 60vh; overflow-y: auto; font-family: 'SF Mono', monospace; font-size: 12px; line-height: 1.6; }
     .log-line { color: #888; white-space: pre-wrap; word-break: break-all; }
     .log-line.thinking { color: #4f8ff7; }
     .log-line.action { color: #4ade80; }
@@ -118,7 +118,7 @@
     // ── WebSocket ──
     function connectWS() {
       const ws = new WebSocket(`ws://${location.host}`);
-      ws.onmessage = (e) => {
+      ws.onmessage = async (e) => {
         const msg = JSON.parse(e.data);
         if (msg.type === 'demo_log' && S.activeDemo) {
           S.activeDemo.log = S.activeDemo.log || [];
@@ -130,11 +130,12 @@
             S.activeDemo.status = 'done';
             S.activeDemo.editedVideo = msg.editedVideo;
             S.activeDemo.rawVideo = msg.rawVideo;
+            S.activeDemo.id = msg.id || S.activeDemo.id;
             S.view = 'editor';
-            S.activeVideoType = msg.editedVideo ? 'edited' : 'raw';
-            loadEDL(S.activeDemo.id);
+            // Load EDL + zoom regions before rendering
+            await loadEDL(S.activeDemo.id);
+            render();
           }
-          render();
         }
         if (msg.type === 'demo_error' && S.activeDemo) {
           S.activeDemo.status = 'error';
@@ -242,11 +243,9 @@
       const HOLD = 0.8, APPROACH = 0.8;
       const segs = [];
 
-      // Before first action
-      if (actions[0].startSec > 1) {
-        segs.push({ startSec: 0, endSec: 1, type: 'keep', speed: 1, label: 'intro' });
-        if (actions[0].startSec - APPROACH > 1)
-          segs.push({ startSec: 1, endSec: actions[0].startSec - APPROACH, type: 'cut', speed: 0, label: 'thinking' });
+      // Before first action — cut the startup/blank screen time
+      if (actions[0].startSec - APPROACH > 0.1) {
+        segs.push({ startSec: 0, endSec: actions[0].startSec - APPROACH, type: 'cut', speed: 0, label: 'startup' });
       }
 
       for (let i = 0; i < actions.length; i++) {
@@ -377,10 +376,13 @@
             <button class="btn btn-primary" onclick="startDemo()">▶ Start Demo</button></div>
         </div>
         ${S.demos.length ? `<h2>Recent Demos</h2><div class="demo-grid">${S.demos.map(d => `
-          <div class="demo-card" onclick="openDemo('${d.id}')">
-            <div class="thumb">▶</div>
-            <div class="name">${escHtml(d.task || d.id)}</div>
+          <div class="demo-card" onclick="openDemo('${d.id}')" style="position:relative">
+            ${d.thumbnail
+              ? `<img src="${d.thumbnail}" style="width:100%;aspect-ratio:16/9;object-fit:cover;border-radius:6px;margin-bottom:8px">`
+              : `<div class="thumb">▶</div>`}
+            <div class="name">${escHtml(d.name || d.task || d.id)}</div>
             <div class="meta">${d.status} · ${new Date(d.startedAt).toLocaleDateString()}</div>
+            <button onclick="event.stopPropagation();deleteDemo('${d.id}')" style="position:absolute;top:6px;right:6px;background:rgba(0,0,0,0.6);border:none;color:#888;cursor:pointer;width:22px;height:22px;border-radius:11px;font-size:12px;display:flex;align-items:center;justify-content:center" onmouseover="this.style.color='#ef4444'" onmouseout="this.style.color='#888'">✕</button>
           </div>`).join('')}</div>` : ''}`;
     }
 
@@ -1514,6 +1516,13 @@
     }
 
     async function loadDemos() { S.demos = await api('/demos'); }
+
+    async function deleteDemo(id) {
+      if (!confirm('Delete this demo and all its files?')) return;
+      await api(`/demo/${id}`, { method: 'DELETE' });
+      await loadDemos();
+      render();
+    }
     function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
     // ── Init ──

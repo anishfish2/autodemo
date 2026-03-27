@@ -198,6 +198,7 @@ async function handleRequest(
           editedVideo: existsSync(editedPath) ? `/api/demo/${dir}/video/edited` : undefined,
           rawVideo: existsSync(rawPath) ? `/api/demo/${dir}/video/raw` : undefined,
           hasActionLog: existsSync(logPath),
+          thumbnail: existsSync(join(traceDir, "thumbnail.jpg")) ? `/api/demo/${dir}/thumbnail` : undefined,
         });
       }
     }
@@ -312,6 +313,41 @@ async function handleRequest(
       sendJson(res, JSON.parse(readFileSync(metaPath, "utf-8")));
     } else {
       sendJson(res, {});
+    }
+    return;
+  }
+
+  // Delete a demo
+  const deleteMatch = path.match(/^\/api\/demo\/([^/]+)$/);
+  if (deleteMatch && method === "DELETE") {
+    const id = deleteMatch[1];
+    const demo = demos.get(id);
+    const traceDir = demo?.traceDir || join(TRACES_DIR, id);
+    // Remove from memory
+    demos.delete(id);
+    // Remove from disk
+    try {
+      const { execSync: ex } = await import("node:child_process");
+      if (existsSync(traceDir)) {
+        ex(`rm -rf "${traceDir}"`);
+      }
+    } catch {}
+    sendJson(res, { ok: true });
+    return;
+  }
+
+  // Serve thumbnail
+  const thumbMatch = path.match(/^\/api\/demo\/([^/]+)\/thumbnail$/);
+  if (thumbMatch && method === "GET") {
+    const id = thumbMatch[1];
+    const demo = demos.get(id);
+    const traceDir = demo?.traceDir || join(TRACES_DIR, id);
+    const thumbPath = join(traceDir, "thumbnail.jpg");
+    if (existsSync(thumbPath)) {
+      sendFile(res, thumbPath, req);
+    } else {
+      res.writeHead(404);
+      res.end();
     }
     return;
   }
