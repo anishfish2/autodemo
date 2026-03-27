@@ -562,8 +562,7 @@
 
     // ── Canvas Preview Engine ──
     let _playing = false;
-    let _blurFrames = [];
-    const BLUR_FRAME_COUNT = 3;
+    let _prevPanX = 0, _prevPanY = 0, _prevZoom = 1; // For motion blur velocity tracking
     let _rafId = null;
 
     function initPreview() {
@@ -709,33 +708,46 @@
       sx = Math.max(0, Math.min(sx, vw - cropW));
       sy = Math.max(0, Math.min(sy, vh - cropH));
 
-      // Draw current frame
-      ctx.drawImage(video, sx, sy, cropW, cropH, 0, 0, vw, vh);
+      // Directional motion blur based on camera pan/zoom velocity
+      if (S.motionBlur && effectiveZ > 1.01) {
+        // Compute velocity of the crop window
+        const velX = (panX - _prevPanX) * effectiveZ;
+        const velY = (panY - _prevPanY) * effectiveZ;
+        const velZ = (effectiveZ - _prevZoom) * 200;
+        const speed = Math.sqrt(velX * velX + velY * velY + velZ * velZ);
 
-      // Motion blur: composite older frames on top with decay
-      if (S.motionBlur && _blurFrames.length > 0) {
-        for (let i = 0; i < _blurFrames.length; i++) {
-          ctx.globalAlpha = 0.08 * (1 - i / _blurFrames.length);
-          ctx.drawImage(_blurFrames[i], 0, 0);
-        }
-        ctx.globalAlpha = 1.0;
-      }
+        if (speed > 5) {
+          // Draw multiple offset copies in the direction of motion for directional blur
+          const blurSamples = Math.min(12, Math.round(speed / 8));
+          const blurStrength = Math.min(30, speed * 0.3); // Max pixel offset
 
-      // Store frame for motion blur (only save if frame actually changed)
-      if (S.motionBlur) {
-        const lastTime = _blurFrames.length > 0 ? _blurFrames[_blurFrames.length - 1]._time : -1;
-        if (Math.abs(t - lastTime) > 0.02) { // Frame changed (>20ms apart)
-          const fc = document.createElement('canvas');
-          fc.width = vw;
-          fc.height = vh;
-          fc.getContext('2d').drawImage(canvas, 0, 0);
-          fc._time = t;
-          _blurFrames.push(fc);
-          if (_blurFrames.length > BLUR_FRAME_COUNT) _blurFrames.shift();
+          // Normalize direction
+          const dirX = velX / (speed || 1);
+          const dirY = velY / (speed || 1);
+
+          // Draw the blurred samples first (underneath)
+          for (let i = blurSamples; i >= 1; i--) {
+            const frac = i / blurSamples;
+            const offsetX = -dirX * blurStrength * frac;
+            const offsetY = -dirY * blurStrength * frac;
+            ctx.globalAlpha = 0.06 * (1 - frac * 0.5);
+            ctx.drawImage(video, sx, sy, cropW, cropH, offsetX, offsetY, vw, vh);
+          }
+
+          // Draw the sharp current frame on top
+          ctx.globalAlpha = 1.0;
+          ctx.drawImage(video, sx, sy, cropW, cropH, 0, 0, vw, vh);
+        } else {
+          ctx.drawImage(video, sx, sy, cropW, cropH, 0, 0, vw, vh);
         }
       } else {
-        _blurFrames = [];
+        ctx.drawImage(video, sx, sy, cropW, cropH, 0, 0, vw, vh);
       }
+
+      // Track for next frame's velocity calculation
+      _prevPanX = panX;
+      _prevPanY = panY;
+      _prevZoom = effectiveZ;
     }
 
     // Find the next keepable time at or after the given time
