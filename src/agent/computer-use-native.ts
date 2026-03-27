@@ -11,9 +11,10 @@ import { runDirector } from "../recording/director.js";
 
 const execFileAsync = promisify(execFile);
 
-// --- Cursor state ---
+// --- State ---
 let cursorX = 0;
 let cursorY = 0;
+let activeDisplayId = 1; // macOS display number for screencapture -D
 
 function easeOutCubic(t: number): number {
   return 1 - Math.pow(1 - t, 3);
@@ -87,7 +88,7 @@ async function animateCursorTo(
 
 async function takeScreenshot(path: string, screenW: number, screenH: number): Promise<string> {
   const rawPath = path.replace(".png", "-raw.png");
-  execSync(`screencapture -x -C ${rawPath}`);
+  execSync(`screencapture -x -C -D ${activeDisplayId} ${rawPath}`);
   // Resize to EXACT target dimensions (stretch to fit, not aspect-preserving)
   // This ensures the image matches display_width_px x display_height_px exactly
   execSync(
@@ -269,12 +270,12 @@ export async function runNativeComputerUseAgent(
     await new Promise((r) => setTimeout(r, 2000));
   }
 
-  // Start FFmpeg screen recording if requested
+  // Start FFmpeg screen recording — detect which screen Chrome is on
   let ffmpegProcess: ChildProcess | null = null;
   const videoPath = join(traceDir, "recording.mp4");
-  // Always record in native computer use mode — the whole point is to produce a video
   {
-    const deviceIndex = await findScreenDevice();
+    const deviceIndex = await findScreenDeviceForChrome();
+    console.log(`Recording screen device: ${deviceIndex}`);
     ffmpegProcess = spawn("ffmpeg", [
       "-y",
       "-f", "avfoundation",
@@ -440,7 +441,7 @@ export async function runNativeComputerUseAgent(
             console.log(`  [Zoom] region (${region.join(", ")})`);
             try {
               const rawPath = screenshotPath.replace(".png", "-full.png");
-              execSync(`screencapture -x -C ${rawPath}`);
+              execSync(`screencapture -x -C -D ${activeDisplayId} ${rawPath}`);
               // Use ffmpeg to crop — more reliable than sips
               const [x1, y1, x2, y2] = region;
               // Scale from 1024x768 to Retina physical pixels
@@ -652,18 +653,70 @@ export async function runNativeComputerUseAgent(
   return result;
 }
 
-async function findScreenDevice(): Promise<number> {
+/**
+ * Detect which macOS screen Chrome's front window is on,
+ * then find the matching FFmpeg AVFoundation capture device.
+ */
+async function findScreenDeviceForChrome(): Promise<number> {
+  // Step 1: Get Chrome window position
+  let winX = 0;
   try {
-    const output = execSync(
-      'ffmpeg -f avfoundation -list_devices true -i "" 2>&1',
-      { encoding: "utf-8" },
-    );
-    const match = output.match(/\[(\d+)\] Capture screen 0/);
-    if (match) return parseInt(match[1], 10);
-  } catch (err) {
-    const output = (err as { stderr?: Buffer }).stderr?.toString() ?? "";
-    const match = output.match(/\[(\d+)\] Capture screen 0/);
-    if (match) return parseInt(match[1], 10);
+    const { stdout } = await execFileAsync("osascript", [
+      "-e",
+      'tell application "Google Chrome" to get bounds of front window',
+    ]);
+    const parts = stdout.trim().split(",").map((s: string) => parseInt(s.trim(), 10));
+    if (parts.length >= 2) winX = parts[0];
+  } catch {}
+
+  // Step 2: Get screen positions to find which screen the window is on
+  let screenIndex = 0;
+  try {
+    const { stdout } = await execFileAsync("osascript", [
+      "-l", "JavaScript", "-e",
+      `ObjC.import('AppKit');
+       const screens = $.NSScreen.screens;
+       const result = [];
+       for (let i = 0; i < screens.count; i++) {
+         const f = screens.objectAtIndex(i).frame;
+         result.push({x: f.origin.x, w: f.size.width});
+       }
+       JSON.stringify(result)`,
+    ]);
+    const screens = JSON.parse(stdout.trim());
+    // Find which screen contains the window's X position
+    for (let i = 0; i < screens.length; i++) {
+      const s = screens[i];
+      if (winX >= s.x && winX < s.x + s.w) {
+        screenIndex = i;
+        break;
+      }
+    }
+  } catch {}
+
+  // Set the display ID for screencapture (1-based)
+  activeDisplayId = screenIndex + 1;
+
+  // Step 3: Find the FFmpeg device for "Capture screen N"
+  const ffmpegOutput = (() => {
+    try {
+      return execSync('ffmpeg -f avfoundation -list_devices true -i "" 2>&1', { encoding: "utf-8" });
+    } catch (err) {
+      return (err as { stdout?: string }).stdout || "";
+    }
+  })();
+
+  const regex = /\[(\d+)\] Capture screen (\d+)/g;
+  let match;
+  while ((match = regex.exec(ffmpegOutput)) !== null) {
+    if (parseInt(match[2], 10) === screenIndex) {
+      return parseInt(match[1], 10);
+    }
   }
-  return 4;
+
+  // Fallback: try screen 0
+  const fallback = ffmpegOutput.match(/\[(\d+)\] Capture screen 0/);
+  if (fallback) return parseInt(fallback[1], 10);
+
+  return 4; // Last resort
 }
