@@ -13,8 +13,35 @@ export interface ZoomRegion {
 }
 
 /**
- * Post-recording director pass: reviews screenshots + action log
- * and decides where to place zoom regions.
+ * Post-recording director pass: reviews screenshots from the action log
+ * and picks zoom regions for the moments a viewer needs to notice.
+ *
+ * A moment is zoom-worthy when the viewer would miss something important
+ * at full-screen scale. Two independent signals drive this:
+ *
+ * 1. VISUAL CHANGE — the screen looks substantially different after an
+ *    action. A modal appeared, results populated, a chart rendered, a
+ *    new page loaded with rich content. The bigger the visual delta
+ *    between consecutive screenshots, the stronger the signal.
+ *
+ * 2. SEMANTIC IMPORTANCE — the action itself is significant regardless
+ *    of how much the screen changed. Clicking "Deploy", "Purchase",
+ *    "Delete", "Submit" — these are the *point* of the demo. The
+ *    viewer needs to see what was clicked and where. Also: the first
+ *    time the demo interacts with a new feature area, or the final
+ *    step in a multi-step workflow (the payoff after setup).
+ *
+ * Either signal alone can justify a zoom. Both together strongly do.
+ *
+ * Centering depends on the signal type:
+ *  - Visual change → center on the new content that appeared
+ *  - Semantic click → center on the element being clicked
+ *
+ * LOW SIGNAL — skip:
+ *  - Preparatory/mechanical actions: clicking into fields, dropdown
+ *    opens, scrolling, typing characters, navigating between pages.
+ *  - Repeated patterns: once the viewer has seen it, skip the rest.
+ *  - No visible change AND no semantic importance.
  */
 export async function runDirector(options: {
   traceDir: string;
@@ -49,13 +76,15 @@ export async function runDirector(options: {
   // Build message content with screenshots + descriptions
   const content: Array<{ type: string; [key: string]: unknown }> = [];
 
+  const totalSec = ((entries[entries.length - 1]?.t || 0) / 1000).toFixed(0);
+
   content.push({
     type: "text",
-    text: `You are a video director reviewing screenshots from a product demo recording. Decide which moments deserve a camera zoom-in and where to focus.
+    text: `You are a video director reviewing a ${totalSec}-second product demo recording (1024x768). Your task: identify which moments deserve a camera zoom-in so the viewer doesn't miss them.
 
-The recording is ${((entries[entries.length - 1]?.t || 0) / 1000).toFixed(0)} seconds long at 1024x768 resolution.
+Each screenshot below shows the screen state AFTER an action was performed. You can see what action was taken and where.
 
-Here are key moments from the recording:`,
+Here are the moments:`,
   });
 
   for (const entry of sampled) {
@@ -63,7 +92,6 @@ Here are key moments from the recording:`,
     const desc = `${entry.action || "action"}${entry.coords ? ` at (${entry.coords[0]}, ${entry.coords[1]})` : ""}`;
 
     // Find the closest screenshot
-    const actionIdx = entries.indexOf(entry);
     const ssPrefix = String(
       entries.filter((e) => e.type === "action").indexOf(entry) + 1,
     ).padStart(3, "0");
@@ -89,19 +117,40 @@ Here are key moments from the recording:`,
   content.push({
     type: "text",
     text: `
-Based on these screenshots, return a JSON array of zoom regions. Each region:
-- startSec: when to start zooming (seconds)
-- endSec: when to stop zooming
-- zoomLevel: 1.5 to 3.0 (how much to zoom in)
-- cx: x coordinate to center the zoom on (0-1024)
-- cy: y coordinate to center the zoom on (0-768)
-- reason: brief description of why this moment deserves a zoom
+Now decide which moments deserve a zoom. A moment is zoom-worthy when the viewer would miss something important at full-screen scale. There are two independent reasons to zoom:
 
-Rules:
-- Zoom on every moment that matters: form interactions, button clicks, important UI elements appearing, key content being revealed, text being typed, meaningful state changes
-- Don't zoom on: page loads with no visible change, idle/waiting moments, repeated similar actions
-- Each zoom should last 1-3 seconds
-- Zoom level 1.5 is standard (subtle, cinematic). Use 1.8-2.0 only for very small UI elements. Never exceed 2.5
+SIGNAL 1 — VISUAL CHANGE: The screen looks substantially different after the action.
+- A new page, modal, panel, or overlay appeared
+- Results/data/content populated an area that was previously empty
+- A workflow completed and produced a visible outcome (form → success state, search → results, upload → preview)
+- A key product feature became visible for the first time
+→ Center the zoom on the NEW CONTENT that appeared, not on the trigger element.
+
+SIGNAL 2 — SEMANTICALLY IMPORTANT ACTION: The action itself is significant, even if the visual change is subtle.
+- A high-stakes click: "Deploy", "Purchase", "Delete", "Send", "Confirm", "Submit" — the moment the demo was building toward
+- The first interaction with a new feature area of the product
+- The final step of a multi-step workflow — the payoff after setup steps
+- Read the button/link text in the screenshot to judge importance
+→ Center the zoom on the element being clicked so the viewer sees what was activated.
+
+Either signal alone can justify a zoom. Both together strongly do.
+
+NOT ZOOM-WORTHY (neither signal present):
+- Mechanical/preparatory actions: clicking into text fields, opening dropdowns, selecting options, scrolling, navigating
+- Typing text character-by-character (zoom on the result after, if significant, not the typing)
+- Hover effects, focus rings, checkbox toggles, minor UI state changes
+- Repeated similar interactions — once the viewer has seen the pattern, skip the rest
+- Actions where the screenshot looks the same as the previous one AND the action text is routine
+
+Return a JSON array. Each entry:
+- startSec: when to begin the zoom (seconds)
+- endSec: when to end (2-4 seconds later)
+- zoomLevel: 1.5 for most moments, 1.8 only if the target content is small. Never exceed 2.0
+- cx: x center of zoom target (0-1024)
+- cy: y center of zoom target (0-768)
+- reason: what makes this moment zoom-worthy (visual change, semantic importance, or both)
+
+If no moment warrants a zoom, return [].
 
 Respond with ONLY the JSON array, no markdown fences.`,
   });
@@ -138,7 +187,8 @@ Respond with ONLY the JSON array, no markdown fences.`,
         typeof r.zoomLevel === "number" &&
         typeof r.cx === "number" &&
         typeof r.cy === "number" &&
-        r.endSec > r.startSec,
+        r.endSec > r.startSec &&
+        r.zoomLevel <= 2.0,
     );
   } catch {
     console.log("  Director: failed to parse zoom regions from LLM response");
