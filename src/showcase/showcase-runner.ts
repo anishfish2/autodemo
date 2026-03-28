@@ -1,6 +1,8 @@
 import type {
   ShowcaseOptions,
   ShowcaseResult,
+  ProjectInfo,
+  DemoScenario,
 } from "./showcase-types.js";
 import { analyzeProject } from "./project-analyzer.js";
 import { planShowcase } from "./showcase-planner.js";
@@ -8,11 +10,44 @@ import { AppLauncher } from "./app-launcher.js";
 import { runAgent } from "../agent/agent-runner.js";
 import { createLogger } from "../trace/logger.js";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, basename } from "node:path";
 import { nanoid } from "nanoid";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Build a minimal ProjectInfo for a live URL with no local source code.
+ * The planner will work with just the URL and any user instructions.
+ */
+function projectInfoForUrl(url: string): ProjectInfo {
+  const hostname = new URL(url).hostname;
+  return {
+    name: hostname,
+    framework: "unknown",
+    packageManager: "npm",
+    startCommand: "",
+    port: 0,
+    startUrl: url,
+    routes: [],
+    apiEndpoints: [],
+    components: [],
+    uiFeatures: {
+      hasForms: false,
+      hasAuth: false,
+      hasNavigation: false,
+      hasDataTables: false,
+      hasCharts: false,
+      hasModals: false,
+      hasMedia: false,
+      details: [],
+    },
+    fileTree: "",
+    readme: "",
+    keyFiles: [],
+    notableDependencies: [],
+  };
 }
 
 export async function runShowcase(
@@ -25,37 +60,53 @@ export async function runShowcase(
   const logger = createLogger(showcaseDir, options.verbose);
   const startMs = Date.now();
 
+  const isUrlOnly = !options.projectPath;
+
   // === 1. ANALYZE ===
-  logger.info({ path: options.projectPath }, "Analyzing project...");
-  const projectInfo = await analyzeProject(options.projectPath);
+  let projectInfo: ProjectInfo;
 
-  // Apply overrides
-  if (options.startCmd) {
-    projectInfo.startCommand = options.startCmd;
-  }
-  if (options.port) {
-    projectInfo.startUrl = `http://localhost:${options.port}`;
-  }
-  if (options.url) {
-    projectInfo.startUrl = options.url;
-  }
+  if (isUrlOnly) {
+    projectInfo = projectInfoForUrl(options.url!);
+    console.log(`\nTarget: ${projectInfo.startUrl} (live URL, no source analysis)\n`);
+  } else {
+    logger.info({ path: options.projectPath }, "Analyzing project...");
+    projectInfo = await analyzeProject(options.projectPath);
 
-  logger.info(
-    {
-      name: projectInfo.name,
-      framework: projectInfo.framework,
-      routes: projectInfo.routes.length,
-      components: projectInfo.components.length,
-      startCommand: projectInfo.startCommand,
-      startUrl: projectInfo.startUrl,
-    },
-    "Project analyzed",
-  );
+    // Apply overrides
+    if (options.startCmd) {
+      projectInfo.startCommand = options.startCmd;
+    }
+    if (options.port) {
+      projectInfo.port = options.port;
+      projectInfo.startUrl = `http://localhost:${options.port}`;
+    }
+    if (options.url) {
+      projectInfo.startUrl = options.url;
+    }
 
-  console.log(`\nProject: ${projectInfo.name} (${projectInfo.framework})`);
-  console.log(`Routes: ${projectInfo.routes.join(", ") || "(none detected)"}`);
-  console.log(`Components: ${projectInfo.components.length} found`);
-  console.log(`Start: ${projectInfo.startCommand} → ${projectInfo.startUrl}\n`);
+    logger.info(
+      {
+        name: projectInfo.name,
+        framework: projectInfo.framework,
+        routes: projectInfo.routes.length,
+        components: projectInfo.components.length,
+        startCommand: projectInfo.startCommand,
+        startUrl: projectInfo.startUrl,
+      },
+      "Project analyzed",
+    );
+
+    console.log(`\nProject: ${projectInfo.name} (${projectInfo.framework}, ${projectInfo.packageManager})`);
+    console.log(`Routes: ${projectInfo.routes.map((r) => r.path).join(", ") || "(none detected)"}`);
+    if (projectInfo.apiEndpoints.length > 0) {
+      console.log(`API: ${projectInfo.apiEndpoints.join(", ")}`);
+    }
+    if (projectInfo.notableDependencies.length > 0) {
+      console.log(`Deps: ${projectInfo.notableDependencies.join(", ")}`);
+    }
+    console.log(`Components: ${projectInfo.components.length} found`);
+    console.log(`Start: ${projectInfo.startCommand} → ${projectInfo.startUrl}\n`);
+  }
 
   // === 2. PLAN ===
   const scenarios = await planShowcase(
@@ -73,9 +124,9 @@ export async function runShowcase(
   }
   console.log();
 
-  // === 3. LAUNCH APP ===
+  // === 3. LAUNCH APP (only for local projects without a URL override) ===
   const appLauncher = new AppLauncher(logger);
-  const shouldLaunch = !options.url;
+  const shouldLaunch = !isUrlOnly && !options.url;
 
   if (shouldLaunch) {
     try {
@@ -84,7 +135,6 @@ export async function runShowcase(
         projectInfo.startCommand,
         projectInfo.startUrl,
       );
-      // Use the actual URL the server is running on (port may have changed)
       const actualUrl = appLauncher.getActualUrl();
       if (actualUrl && actualUrl !== projectInfo.startUrl) {
         logger.info(
@@ -111,14 +161,21 @@ export async function runShowcase(
         `\n--- Scenario ${i + 1}/${scenarios.length}: ${scenario.title} ---`,
       );
 
-      const taskWithInstructions = options.instructions
-        ? `${scenario.description}\n\nAdditional context: ${options.instructions}`
-        : scenario.description;
+      let task = scenario.description;
+      if (scenario.interactionHints?.length) {
+        task += `\n\nKey elements to interact with: ${scenario.interactionHints.join(", ")}`;
+      }
+      if (scenario.successCriteria) {
+        task += `\n\nSuccess criteria: ${scenario.successCriteria}`;
+      }
+      if (options.instructions) {
+        task += `\n\nAdditional context: ${options.instructions}`;
+      }
 
       let agentResult;
       try {
         agentResult = await runAgent({
-          task: taskWithInstructions,
+          task,
           startUrl: projectInfo.startUrl + scenario.startPath,
           maxIterations: 50,
           totalTimeoutMs: 600000,
@@ -139,7 +196,6 @@ export async function runShowcase(
         `${icon} ${scenario.title}: ${agentResult.result} (${agentResult.totalIterations} iters, ${agentResult.totalStepsExecuted} steps)`,
       );
 
-      // If scenario failed, stop — don't record more broken state
       if (agentResult.result === "failure") {
         logger.warn("Scenario failed — stopping showcase to keep video clean");
         break;

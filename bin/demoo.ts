@@ -17,13 +17,15 @@ const program = new Command()
   .name("demoo")
   .description("macOS computer-use agent — automated demo video generation")
   .version("0.1.0")
-  .action(async () => {
+  .option("-p, --port <port>", "Port for the web UI", "3456")
+  .action(async (options) => {
+    const port = parseInt(options.port, 10);
     // No subcommand = launch web UI
     const { startServer } = await import("../server/index.js");
-    startServer(3456);
+    startServer(port);
     // Open browser
     const { exec } = await import("node:child_process");
-    setTimeout(() => exec("open http://localhost:3456"), 1000);
+    setTimeout(() => exec(`open http://localhost:${port}`), 1000);
   });
 
 program
@@ -124,26 +126,27 @@ program
 
 program
   .command("showcase")
-  .description("Analyze a project's code and auto-demo its features")
-  .argument("<project-path>", "Path to the web app project")
+  .description("Auto-demo a local project or live website")
+  .argument("<target>", "Local project path or URL (e.g. ./my-app or https://example.com)")
   .option("--start-cmd <cmd>", "Override the dev server start command")
   .option("--port <n>", "Override the dev server port")
-  .option("--url <url>", "Use a running server URL (skip auto-launch)")
   .option("--scenarios <n>", "Max number of features to demo", "5")
   .option("-i, --instructions <text>", "Additional instructions (login credentials, context, preferences)")
   .option("--yes", "Skip confirmation", false)
   .option("--trace-dir <dir>", "Output directory for traces", "./traces")
   .option("--verbose", "Enable verbose logging", false)
   .option("--model <model>", "Claude model to use", "claude-sonnet-4-20250514")
-  .action(async (projectPath: string, options) => {
+  .action(async (target: string, options) => {
     const { resolve } = await import("node:path");
     const { runShowcase } = await import("../src/showcase/showcase-runner.js");
 
+    const isUrl = /^https?:\/\//.test(target);
+
     const result = await runShowcase({
-      projectPath: resolve(projectPath),
+      projectPath: isUrl ? "" : resolve(target),
       startCmd: options.startCmd,
       port: options.port ? parseInt(options.port, 10) : undefined,
-      url: options.url,
+      url: isUrl ? target : undefined,
       instructions: options.instructions,
       maxScenarios: parseInt(options.scenarios, 10),
       skipConfirm: options.yes,
