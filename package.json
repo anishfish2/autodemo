@@ -1,6 +1,6 @@
 {
   "name": "@anishfish/autodemo",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Automated demo video generation — point at a website or codebase and get a polished product demo video",
   "type": "module",
   "bin": {
