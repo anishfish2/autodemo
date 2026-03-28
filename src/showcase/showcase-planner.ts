@@ -1,5 +1,5 @@
 import type { ProjectInfo, DemoScenario } from "./showcase-types.js";
-import { LlmClient } from "../agent/llm-client.js";
+import Anthropic from "@anthropic-ai/sdk";
 import type { Logger } from "pino";
 import { z } from "zod";
 
@@ -90,7 +90,7 @@ export async function planShowcase(
   maxScenarios: number,
   instructions?: string,
 ): Promise<DemoScenario[]> {
-  const llm = new LlmClient(model, logger);
+  const client = new Anthropic();
   const systemPrompt = buildShowcaseSystemPrompt();
   let userPrompt = buildShowcaseUserPrompt(info);
 
@@ -100,12 +100,20 @@ export async function planShowcase(
 
   logger.info("Generating showcase plan from codebase analysis...");
 
-  const result = await llm.generatePlan(systemPrompt, [
-    { role: "user", content: userPrompt },
-  ]);
+  const response = await client.messages.create({
+    model,
+    max_tokens: 4096,
+    system: systemPrompt,
+    messages: [{ role: "user", content: userPrompt }],
+  });
+
+  const content = response.content
+    .filter((b): b is Anthropic.TextBlock => b.type === "text")
+    .map((b) => b.text)
+    .join("");
 
   // Parse the response
-  const jsonStr = extractJson(result.content);
+  const jsonStr = extractJson(content);
   const parsed = JSON.parse(jsonStr);
   const validated = ShowcasePlanSchema.parse(parsed);
 

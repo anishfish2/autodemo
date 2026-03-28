@@ -8,17 +8,8 @@ export interface ShowcaseOptions {
   instructions?: string;
   maxScenarios: number;
   skipConfirm: boolean;
-  cursor: boolean;
-  cursorSpeed: number;
-  record?: boolean;
-  raw?: boolean;
-  zoom?: number;
-  fps?: number;
-  headless: boolean;
-  computerUse?: boolean;
   traceDir: string;
   verbose: boolean;
-  slowMo: number;
   model: string;
 }
 

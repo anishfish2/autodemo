@@ -645,7 +645,6 @@ export async function runNativeComputerUseAgent(
     totalIterations: iterations,
     totalStepsExecuted,
     totalDurationMs: Date.now() - agentStartMs,
-    iterations: [],
     traceDir,
     finalMessage,
   };

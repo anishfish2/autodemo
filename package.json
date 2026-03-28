@@ -27,7 +27,6 @@
     "automation",
     "computer-use",
     "claude",
-    "playwright",
     "screen-studio"
   ],
   "author": "",
@@ -49,8 +48,7 @@
     "zod": "^3.24.0"
   },
   "devDependencies": {
-    "playwright": "^1.50.0",
-    "@types/node": "^22.0.0",
+"@types/node": "^22.0.0",
     "@types/ws": "^8.18.1",
     "tsx": "^4.21.0",
     "typescript": "^5.8.0",

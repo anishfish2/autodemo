@@ -1,17 +1,14 @@
 import type {
   ShowcaseOptions,
   ShowcaseResult,
-  DemoScenario,
 } from "./showcase-types.js";
 import { analyzeProject } from "./project-analyzer.js";
 import { planShowcase } from "./showcase-planner.js";
 import { AppLauncher } from "./app-launcher.js";
 import { runAgent } from "../agent/agent-runner.js";
 import { createLogger } from "../trace/logger.js";
-import { EventLogger } from "../recording/event-logger.js";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { promisify } from "node:util";
 import { nanoid } from "nanoid";
 
 function sleep(ms: number): Promise<void> {
@@ -104,18 +101,7 @@ export async function runShowcase(
     }
   }
 
-  // === 4. START RECORDING ===
-  const recording = options.record;
-  let eventLogger: EventLogger | undefined;
-  const recordingsDir = join(showcaseDir, "recordings");
-  const eventsPath = join(showcaseDir, "events.json");
-
-  if (recording) {
-    mkdirSync(recordingsDir, { recursive: true });
-    eventLogger = new EventLogger();
-  }
-
-  // === 5. EXECUTE DEMOS ===
+  // === 4. EXECUTE DEMOS ===
   const results: ShowcaseResult["scenarios"] = [];
 
   try {
@@ -124,8 +110,6 @@ export async function runShowcase(
       console.log(
         `\n--- Scenario ${i + 1}/${scenarios.length}: ${scenario.title} ---`,
       );
-
-      eventLogger?.logScenarioStart(scenario.title);
 
       const taskWithInstructions = options.instructions
         ? `${scenario.description}\n\nAdditional context: ${options.instructions}`
@@ -137,29 +121,17 @@ export async function runShowcase(
           task: taskWithInstructions,
           startUrl: projectInfo.startUrl + scenario.startPath,
           maxIterations: 50,
-          maxTotalSteps: 200,
           totalTimeoutMs: 600000,
-          chunkSize: 5,
-          headless: options.headless,
           traceDir: showcaseDir,
-          verbose: options.verbose,
-          slowMo: options.slowMo,
           model: options.model,
-          cursor: options.cursor,
-          cursorSpeed: options.cursorSpeed,
-          eventLogger,
-          recordVideoDir: recording ? recordingsDir : undefined,
-          computerUse: options.computerUse,
         });
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
         logger.error({ error: errorMsg, scenario: scenario.title }, "Scenario crashed");
         console.error(`\n✗ ${scenario.title}: CRASHED — ${errorMsg}`);
-        // Stop recording immediately — don't capture error state in video
         break;
       }
 
-      eventLogger?.logScenarioEnd(scenario.title);
       results.push({ scenario, agentResult });
 
       const icon = agentResult.result === "success" ? "✓" : "✗";
@@ -178,58 +150,9 @@ export async function runShowcase(
       }
     }
   } finally {
-    // === 6. SAVE EVENTS ===
-    if (eventLogger) {
-      eventLogger.save(eventsPath);
-    }
-
-    // === 7. CLEANUP ===
+    // === 5. CLEANUP ===
     if (shouldLaunch) {
       await appLauncher.stop();
-    }
-  }
-
-  // === 8. FIND AND REPORT VIDEOS ===
-  // Playwright saves videos as .webm files in the recordings dir
-  if (recording) {
-    const { readdirSync } = await import("node:fs");
-    try {
-      const videoFiles = readdirSync(recordingsDir).filter((f) =>
-        f.endsWith(".webm"),
-      );
-      if (videoFiles.length > 0) {
-        // Convert webm to mp4 for better compatibility
-        const rawWebm = join(recordingsDir, videoFiles[0]);
-        const outputMp4 = join(showcaseDir, "demo-video.mp4");
-
-        logger.info("Converting Playwright recording to MP4...");
-        const { execFileAsync: execF } = await import("node:child_process").then(
-          (m) => ({ execFileAsync: promisify(m.execFile) }),
-        );
-        try {
-          await execF("ffmpeg", [
-            "-y",
-            "-i",
-            rawWebm,
-            "-c:v",
-            "libx264",
-            "-preset",
-            "medium",
-            "-crf",
-            "20",
-            "-pix_fmt",
-            "yuv420p",
-            outputMp4,
-          ]);
-          console.log(`\nVideo saved: ${outputMp4}`);
-        } catch {
-          console.log(`\nRaw recording saved: ${rawWebm}`);
-        }
-      } else {
-        console.log("\nNo video files found in recordings directory.");
-      }
-    } catch {
-      console.log("\nRecordings directory not found.");
     }
   }
 

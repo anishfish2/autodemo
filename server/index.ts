@@ -574,14 +574,8 @@ async function runDemo(demo: ActiveDemo, apiKey: string, instructions?: string):
       startUrl: startUrl || "",
       model: demo.model,
       maxIterations: loadConfig().maxIterations,
-      maxTotalSteps: 200,
       totalTimeoutMs: loadConfig().timeout,
-      chunkSize: 5,
-      headless: false,
       traceDir: TRACES_DIR,
-      verbose: false,
-      slowMo: 0,
-      computerUse: true,
     });
 
     demo.traceDir = result.traceDir;
